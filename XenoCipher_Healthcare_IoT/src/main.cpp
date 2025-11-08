@@ -29,7 +29,7 @@
 
 // Configuration
 #define SERVER_URL "http://192.168.65.115:8081"  // Your server IP and port
-#define WIFI_SSID "Galaxy M322E19"  //Galaxy M322E19
+#define WIFI_SSID "Galaxy M322E19"  //Galaxy M322E19 
 #define WIFI_PASSWORD "yvhh6733"
 #define HEALTH_DATA_INTERVAL_MS 10000
 #define CONNECTION_TIMEOUT_MS 10000
