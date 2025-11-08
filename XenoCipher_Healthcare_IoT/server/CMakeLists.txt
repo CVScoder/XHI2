@@ -4,6 +4,9 @@ project(XenoCipherServer)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Export compile commands for IntelliSense
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 # Define Windows target version for ASIO
 add_definitions(-D_WIN32_WINNT=0x0601) # Windows 7 or later
 

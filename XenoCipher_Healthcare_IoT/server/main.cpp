@@ -7,7 +7,7 @@
 #include <sstream>
 #include <iomanip>
 #include <regex>
-#include <ctime> // Added for timestamp in logging
+#include <ctime> 
 #include "../lib/NTRU/include/ntru.h"
 #include "../lib/common/common.h"
 #include "../lib/CryptoKDF/include/crypto_kdf.h"

@@ -300,5 +300,12 @@
   "C_Cpp_Runner.showCompilationTime": false,
   "C_Cpp_Runner.useLinkTimeOptimization": false,
   "C_Cpp_Runner.msvcSecureNoWarnings": false,
-  "cmake.sourceDirectory": "C:/Users/leela/Documents/XenoCipher_Healthcare_IoT/server"
+  "cmake.sourceDirectory": "${workspaceFolder}/server",
+  "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
+  "C_Cpp.default.intelliSenseMode": "windows-msvc-x64",
+  "C_Cpp.default.cppStandard": "c++20",
+  "files.associations": {
+    "server/**/*.cpp": "cpp",
+    "server/**/*.h": "c"
+  }
 }
