@@ -301,11 +301,28 @@
   "C_Cpp_Runner.useLinkTimeOptimization": false,
   "C_Cpp_Runner.msvcSecureNoWarnings": false,
   "cmake.sourceDirectory": "${workspaceFolder}/server",
-  "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
-  "C_Cpp.default.intelliSenseMode": "windows-msvc-x64",
-  "C_Cpp.default.cppStandard": "c++20",
+  "cmake.buildDirectory": "${workspaceFolder}/server/build",
+  "cmake.toolchainFile": "C:/Users/chall/vcpkg/scripts/buildsystems/vcpkg.cmake",
+  "cmake.configureArgs": [
+    "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"
+  ],
+  "cmake.generator": "Visual Studio 17 2022",
+  "cmake.preferredGenerators": [
+    "Visual Studio 17 2022",
+    "Visual Studio 16 2019",
+    "Unix Makefiles"
+  ],
+  "cmake.configureOnOpen": false,
+  "cmake.configureOnEdit": false,
   "files.associations": {
     "server/**/*.cpp": "cpp",
     "server/**/*.h": "c"
-  }
+  },
+  "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
+  "C_Cpp.default.intelliSenseMode": "windows-msvc-x64",
+  "C_Cpp.default.cppStandard": "c++20",
+  "C_Cpp.workspaceParsingPriority": "highest",
+  "C_Cpp.errorSquiggles": "enabled",
+  "C_Cpp.intelliSenseEngine": "default",
+  "C_Cpp.default.compileCommands": "${workspaceFolder}/server/build/compile_commands.json"
 }

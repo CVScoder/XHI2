@@ -6,33 +6,6 @@
 {
     "configurations": [
         {
-            "name": "Win32",
-            "includePath": [
-                "${workspaceFolder}/server",
-                "${workspaceFolder}/lib/NTRU/include",
-                "${workspaceFolder}/lib/CryptoKDF/include",
-                "${workspaceFolder}/lib/HMAC/include",
-                "${workspaceFolder}/lib/LFSR/include",
-                "${workspaceFolder}/lib/Tinkerbell/include",
-                "${workspaceFolder}/lib/Transposition/include",
-                "${workspaceFolder}/lib/common",
-                "C:/Users/chall/vcpkg/installed/x64-windows/include",
-                "C:/Users/chall/vcpkg/installed/x64-windows/include/pqxx",
-                "C:/Users/chall/vcpkg/installed/x64-windows/include/mbedtls"
-            ],
-            "defines": [
-                "_DEBUG",
-                "UNICODE",
-                "_UNICODE",
-                "_WIN32_WINNT=0x0601"
-            ],
-            "windowsSdkVersion": "10.0.22621.0",
-            "cStandard": "c17",
-            "cppStandard": "c++20",
-            "intelliSenseMode": "windows-msvc-x64",
-            "configurationProvider": "ms-vscode.cmake-tools"
-        },
-        {
             "name": "PlatformIO",
             "includePath": [
                 "D:/Projects/XHI2/XenoCipher_Healthcare_IoT/include",
@@ -252,6 +225,10 @@
                 "C:/Users/chall/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/dio_qspi/include",
                 "C:/Users/chall/.platformio/packages/framework-arduinoespressif32/cores/esp32",
                 "C:/Users/chall/.platformio/packages/framework-arduinoespressif32/variants/esp32",
+                "D:/Projects/XHI2/XenoCipher_Healthcare_IoT/lib/AdaptiveMonitor/include",
+                "D:/Projects/XHI2/XenoCipher_Healthcare_IoT/lib/AdaptiveMonitor/src",
+                "D:/Projects/XHI2/XenoCipher_Healthcare_IoT/lib/ReplayProtection/include",
+                "D:/Projects/XHI2/XenoCipher_Healthcare_IoT/lib/ReplayProtection/src",
                 "C:/Users/chall/.platformio/packages/framework-arduinoespressif32/libraries/ArduinoOTA/src",
                 "C:/Users/chall/.platformio/packages/framework-arduinoespressif32/libraries/AsyncUDP/src",
                 "C:/Users/chall/.platformio/packages/framework-arduinoespressif32/libraries/BLE/src",
@@ -504,6 +481,10 @@
                     "C:/Users/chall/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/dio_qspi/include",
                     "C:/Users/chall/.platformio/packages/framework-arduinoespressif32/cores/esp32",
                     "C:/Users/chall/.platformio/packages/framework-arduinoespressif32/variants/esp32",
+                    "D:/Projects/XHI2/XenoCipher_Healthcare_IoT/lib/AdaptiveMonitor/include",
+                    "D:/Projects/XHI2/XenoCipher_Healthcare_IoT/lib/AdaptiveMonitor/src",
+                    "D:/Projects/XHI2/XenoCipher_Healthcare_IoT/lib/ReplayProtection/include",
+                    "D:/Projects/XHI2/XenoCipher_Healthcare_IoT/lib/ReplayProtection/src",
                     "C:/Users/chall/.platformio/packages/framework-arduinoespressif32/libraries/ArduinoOTA/src",
                     "C:/Users/chall/.platformio/packages/framework-arduinoespressif32/libraries/AsyncUDP/src",
                     "C:/Users/chall/.platformio/packages/framework-arduinoespressif32/libraries/BLE/src",

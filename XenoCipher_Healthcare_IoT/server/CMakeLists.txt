@@ -1,4 +1,10 @@
 cmake_minimum_required(VERSION 3.15)
+
+# Set vcpkg toolchain if not already set (must be before project())
+if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
+    set(CMAKE_TOOLCHAIN_FILE "C:/Users/chall/vcpkg/scripts/buildsystems/vcpkg.cmake" CACHE STRING "")
+endif()
+
 project(XenoCipherServer)
 
 set(CMAKE_CXX_STANDARD 20)

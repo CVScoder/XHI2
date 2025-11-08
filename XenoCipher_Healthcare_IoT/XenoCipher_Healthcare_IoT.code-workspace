@@ -10,6 +10,11 @@
 			"*.h": "c",
 			"*.cpp": "cpp",
 			"*.ino": "cpp"
-		}
+		},
+		"C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
+		"C_Cpp.default.intelliSenseMode": "windows-msvc-x64",
+		"C_Cpp.default.cppStandard": "c++20",
+		"C_Cpp.workspaceParsingPriority": "highest",
+		"cmake.sourceDirectory": "${workspaceFolder}/server"
 	}
 }
