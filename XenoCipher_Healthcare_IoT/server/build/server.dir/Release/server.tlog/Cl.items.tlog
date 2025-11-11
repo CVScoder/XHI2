@@ -5,3 +5,7 @@ D:\Projects\XHI2\XenoCipher_Healthcare_IoT\lib\HMAC\src\hmac.cpp;D:\Projects\XHI
 D:\Projects\XHI2\XenoCipher_Healthcare_IoT\lib\LFSR\src\lfsr.cpp;D:\Projects\XHI2\XenoCipher_Healthcare_IoT\server\build\server.dir\Release\lfsr.obj
 D:\Projects\XHI2\XenoCipher_Healthcare_IoT\lib\Tinkerbell\src\tinkerbell.cpp;D:\Projects\XHI2\XenoCipher_Healthcare_IoT\server\build\server.dir\Release\tinkerbell.obj
 D:\Projects\XHI2\XenoCipher_Healthcare_IoT\lib\Transposition\src\transposition.cpp;D:\Projects\XHI2\XenoCipher_Healthcare_IoT\server\build\server.dir\Release\transposition.obj
+D:\Projects\XHI2\XenoCipher_Healthcare_IoT\lib\Adaptive_Switchboard\src\adaptive_switchboard.cpp;D:\Projects\XHI2\XenoCipher_Healthcare_IoT\server\build\server.dir\Release\adaptive_switchboard.obj
+D:\Projects\XHI2\XenoCipher_Healthcare_IoT\lib\Heuristics_Manager\src\heuristics_manager.cpp;D:\Projects\XHI2\XenoCipher_Healthcare_IoT\server\build\server.dir\Release\heuristics_manager.obj
+D:\Projects\XHI2\XenoCipher_Healthcare_IoT\lib\ChaCha20\src\chacha20_impl.cpp;D:\Projects\XHI2\XenoCipher_Healthcare_IoT\server\build\server.dir\Release\chacha20_impl.obj
+D:\Projects\XHI2\XenoCipher_Healthcare_IoT\lib\Salsa20\src\salsa20_impl.cpp;D:\Projects\XHI2\XenoCipher_Healthcare_IoT\server\build\server.dir\Release\salsa20_impl.obj

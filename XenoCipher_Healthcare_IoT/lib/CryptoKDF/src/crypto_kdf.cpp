@@ -121,89 +121,129 @@ bool hkdf_expand(const uint8_t prk[32],
 }
 
 // -----------------------------------------------------------------------------
-// High-level deriveKeys (HKDF-based)
+// High-level deriveKeys (HKDF-based) with domain-separated labels
 // -----------------------------------------------------------------------------
-bool deriveKeys(const uint8_t* masterSecret, size_t masterLen, DerivedKeys& out)
+bool deriveKeys(const uint8_t* masterSecret, size_t masterLen, struct DerivedKeys& out)
 {
     if (!masterSecret || masterLen < 32) return false;
-
-    // The master key is used directly for the encryption algorithms
-    // The salt is now a shared secret and not derived from the master key
     
-    // For the purpose of key derivation for the encryption algorithms, we can use a fixed info string
-    const uint8_t info[] = { 'X','E','N','O','-','E','N','C','-','K','E','Y','S' };
-
     uint8_t prk[32];
-    if (!hkdf_extract((const uint8_t*)COMMON_SALT, strlen(COMMON_SALT), masterSecret, masterLen, prk)) {
+    
+    // Extract with fixed salt
+    if (!hkdf_extract((const uint8_t*)KDF_SALT_COMMON, 
+                     strlen(KDF_SALT_COMMON), 
+                     masterSecret, masterLen, prk)) {
         return false;
     }
-
-    // Expand separately for each subkey (domain separation via info)
-    // 1) LFSR seed (4 bytes)
-    {
-        const uint8_t info[] = { 'X','E','N','O','-','L','F','S','R','-','S','E','E','D' }; // info label
-        uint8_t outbuf[4];
-        if (!hkdf_expand(prk, info, sizeof(info), outbuf, sizeof(outbuf))) { secure_zero(prk, sizeof(prk)); return false; }
-        uint32_t seed = ((uint32_t)outbuf[0] << 24) | ((uint32_t)outbuf[1] << 16) | ((uint32_t)outbuf[2] << 8) | (uint32_t)outbuf[3];
-        out.lfsrSeed = seed ? seed : 0xACE1u; // ensure non-zero
-        secure_zero(outbuf, sizeof(outbuf));
+    
+    // Expand with domain-separated labels
+    
+    // 1) LFSR seed - DOMAIN: "xenocipher-lfsr-seed-v1"
+    uint8_t lfsrBuf[4];
+    if (!hkdf_expand(prk, (const uint8_t*)KDF_LABEL_LFSR_SEED, 
+                    strlen(KDF_LABEL_LFSR_SEED), lfsrBuf, 4)) {
+        secure_zero(prk, sizeof(prk));
+        return false;
     }
-
-    // 2) Tinkerbell key (16 bytes)
-    {
-        const uint8_t info[] = { 'X','E','N','O','-','T','I','N','K','E','R','B','E','L','L','-','K' };
-        if (!hkdf_expand(prk, info, sizeof(info), out.tinkerbellKey, sizeof(out.tinkerbellKey))) { secure_zero(prk, sizeof(prk)); return false; }
+    out.lfsrSeed = ((uint32_t)lfsrBuf[0] << 24) | ((uint32_t)lfsrBuf[1] << 16) | 
+                   ((uint32_t)lfsrBuf[2] << 8) | (uint32_t)lfsrBuf[3];
+    if (out.lfsrSeed == 0) out.lfsrSeed = 0xACE1u;
+    secure_zero(lfsrBuf, sizeof(lfsrBuf));
+    
+    // 2) Tinkerbell key - DOMAIN: "xenocipher-tinkerbell-v1"
+    if (!hkdf_expand(prk, (const uint8_t*)KDF_LABEL_TINKERBELL,
+                    strlen(KDF_LABEL_TINKERBELL),
+                    out.tinkerbellKey, 16)) {
+        secure_zero(prk, sizeof(prk));
+        return false;
     }
-
-    // 3) Transposition key (16 bytes)
-    {
-        const uint8_t info[] = { 'X','E','N','O','-','T','R','A','N','S','P','O','S','-','K' };
-        if (!hkdf_expand(prk, info, sizeof(info), out.transpositionKey, sizeof(out.transpositionKey))) { secure_zero(prk, sizeof(prk)); return false; }
+    
+    // 3) Transposition key - DOMAIN: "xenocipher-transposition-v1"
+    if (!hkdf_expand(prk, (const uint8_t*)KDF_LABEL_TRANSPOSITION,
+                    strlen(KDF_LABEL_TRANSPOSITION),
+                    out.transpositionKey, 16)) {
+        secure_zero(prk, sizeof(prk));
+        return false;
     }
-
-    // 4) HMAC key (32 bytes)
-    {
-        const uint8_t info[] = { 'X','E','N','O','-','H','M','A','C','-','K','E','Y' };
-        if (!hkdf_expand(prk, info, sizeof(info), out.hmacKey, sizeof(out.hmacKey))) { secure_zero(prk, sizeof(prk)); return false; }
+    
+    // 4) HMAC key - DOMAIN: "xenocipher-hmac-key-v1"
+    if (!hkdf_expand(prk, (const uint8_t*)KDF_LABEL_HMAC,
+                    strlen(KDF_LABEL_HMAC),
+                    out.hmacKey, 32)) {
+        secure_zero(prk, sizeof(prk));
+        return false;
     }
-
-    // Zero PRK
+    
     secure_zero(prk, sizeof(prk));
     return true;
 }
 
 // -----------------------------------------------------------------------------
-// Per-message key derivation. Use base.hmacKey as PRK for message-specific expand.
-// Info = "XENO-MSGK" || nonce_be32
+// Per-message key derivation with nonce in context
+// Use base.hmacKey as PRK for message-specific expand.
+// Context = "xenocipher-message-keys-v1" || nonce_be32
 // -----------------------------------------------------------------------------
-bool deriveMessageKeys(const DerivedKeys& base, uint32_t nonce, MessageKeys& out)
+bool deriveMessageKeys(const struct DerivedKeys& base, uint32_t nonce, struct MessageKeys& out)
 {
-    // PRK = HMAC(salt=none, IKM = base.hmacKey) => but HKDF-Extract with zero salt is HMAC(zero, IKM)
-    // Simpler: use hkdf_extract with salt=NULL to produce prk via HMAC(zero, IKM)
     uint8_t prk[32];
     if (!hkdf_extract(NULL, 0, base.hmacKey, sizeof(base.hmacKey), prk)) return false;
-
-    // Build info = label || nonce_be32
-    uint8_t info[12];
-    const char label[] = "XENO-MSGK"; // 8 bytes
-    memcpy(info, label, 8);
-    info[8] = (uint8_t)((nonce >> 24) & 0xFF);
-    info[9] = (uint8_t)((nonce >> 16) & 0xFF);
-    info[10] = (uint8_t)((nonce >> 8) & 0xFF);
-    info[11] = (uint8_t)(nonce & 0xFF);
-
+    
+    // Build context: label + nonce (big-endian)
+    constexpr size_t label_len = sizeof(KDF_LABEL_MESSAGE_BASE) - 1; // exclude null terminator
+    uint8_t context[label_len + 4];
+    memcpy(context, KDF_LABEL_MESSAGE_BASE, label_len);
+    context[label_len + 0] = (uint8_t)((nonce >> 24) & 0xFF);
+    context[label_len + 1] = (uint8_t)((nonce >> 16) & 0xFF);
+    context[label_len + 2] = (uint8_t)((nonce >> 8) & 0xFF);
+    context[label_len + 3] = (uint8_t)(nonce & 0xFF);
+    
     // total bytes needed = 4 + 16 + 16 = 36
     uint8_t okm[36];
-    if (!hkdf_expand(prk, info, sizeof(info), okm, sizeof(okm))) { secure_zero(prk, sizeof(prk)); return false; }
-
-    // Fill out message keys (no XOR)
-    uint32_t seed = ((uint32_t)okm[0] << 24) | ((uint32_t)okm[1] << 16) | ((uint32_t)okm[2] << 8) | (uint32_t)okm[3];
+    if (!hkdf_expand(prk, context, sizeof(context), okm, sizeof(okm))) {
+        secure_zero(prk, sizeof(prk));
+        return false;
+    }
+    
+    // Parse OKM
+    uint32_t seed = ((uint32_t)okm[0] << 24) | ((uint32_t)okm[1] << 16) |
+                    ((uint32_t)okm[2] << 8) | (uint32_t)okm[3];
     out.lfsrSeed = seed ? seed : 0xACE1u;
     memcpy(out.tinkerbellKey, okm + 4, 16);
     memcpy(out.transpositionKey, okm + 20, 16);
-
-    // wipe temporaries
+    
     secure_zero(okm, sizeof(okm));
+    secure_zero(prk, sizeof(prk));
+    return true;
+}
+
+// -----------------------------------------------------------------------------
+// Enhanced key derivation with ChaCha20 key for fallback recipe
+// -----------------------------------------------------------------------------
+bool deriveKeysEnhanced(const uint8_t* masterSecret, size_t masterLen, DerivedKeysEnhanced& out)
+{
+    if (!masterSecret || masterLen < 32) return false;
+    
+    // First derive the base keys
+    if (!deriveKeys(masterSecret, masterLen, out.base)) {
+        return false;
+    }
+    
+    // Now derive the ChaCha20 key using the same PRK
+    uint8_t prk[32];
+    if (!hkdf_extract((const uint8_t*)KDF_SALT_COMMON, 
+                     strlen(KDF_SALT_COMMON), 
+                     masterSecret, masterLen, prk)) {
+        return false;
+    }
+    
+    // Derive ChaCha20 key - DOMAIN: "xenocipher-chacha20-v1"
+    if (!hkdf_expand(prk, (const uint8_t*)KDF_LABEL_CHACHA20,
+                    strlen(KDF_LABEL_CHACHA20),
+                    out.chacha20Key, 32)) {
+        secure_zero(prk, sizeof(prk));
+        return false;
+    }
+    
     secure_zero(prk, sizeof(prk));
     return true;
 }

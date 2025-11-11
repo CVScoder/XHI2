@@ -11,6 +11,8 @@
 #include <iomanip>
 #include <regex>
 #include <cstring>
+#include <queue>
+#include <mutex>
 
 #include "crypto_kdf.h"
 #include "lfsr.h"
@@ -20,15 +22,68 @@
 #include "entropy.h"
 
 #include "../lib/NTRU/include/ntru.h"
+#include "../lib/Adaptive_Switchboard/include/adaptive_switchboard.h"
 #ifndef HMAC_TAG_LEN
 #define HMAC_TAG_LEN 16
 #endif
+
+// Time utility function (milliseconds since boot)
+#define GET_TIME_MS() (millis())
+
+// Lightweight local implementations for nonce tracking and key rotation
+// (device-side) to avoid external dependencies.
+struct NonceTracker {
+  uint32_t lastNonce;
+  bool allowReuse;
+  uint32_t lastTsMs;
+};
+
+static inline void nonce_tracker_init(NonceTracker* t, bool allowReuse) {
+  t->lastNonce = 0;
+  t->allowReuse = allowReuse;
+  t->lastTsMs = 0;
+}
+
+static inline uint32_t nonce_tracker_get_next(NonceTracker* t) {
+  return ++t->lastNonce;
+}
+
+static inline void nonce_tracker_mark_used(NonceTracker* t, uint32_t nonce, uint32_t nowMs) {
+  t->lastNonce = nonce;
+  t->lastTsMs = nowMs;
+}
+
+struct KeyRotationPolicy {
+  uint32_t intervalMs;
+  uint32_t lastRotationMs;
+  uint32_t rotation_counter;
+};
+
+static inline void key_rotation_init(KeyRotationPolicy* p) {
+  p->intervalMs = 60u * 60u * 1000u; // default: 1 hour
+  p->lastRotationMs = 0;
+  p->rotation_counter = 0;
+}
+
+static inline void key_rotation_update(KeyRotationPolicy* /*p*/) {
+  // No-op for local policy
+}
+
+static inline bool key_rotation_is_needed(const KeyRotationPolicy* p, uint32_t nowMs) {
+  if (p->lastRotationMs == 0) return true;
+  return (nowMs - p->lastRotationMs) >= p->intervalMs;
+}
+
+static inline void key_rotation_mark_completed(KeyRotationPolicy* p) {
+  p->lastRotationMs = GET_TIME_MS();
+  p->rotation_counter += 1;
+}
 
 #define VERSION_BASE 0x01
 #define VERSION_NONCE_EXT 0x81
 
 // Configuration
-#define SERVER_URL "http://192.168.65.115:8081"  // Your server IP and port
+#define SERVER_URL "http://192.168.230.115:8081"  // Your server IP and port
 #define WIFI_SSID "Galaxy M322E19"  //Galaxy M322E19 
 #define WIFI_PASSWORD "yvhh6733"
 #define HEALTH_DATA_INTERVAL_MS 10000
@@ -71,6 +126,17 @@ static DerivedKeys gBaseKeys;
 static uint8_t gMasterKey[32];
 static std::vector<uint8_t> gPublicKey;
 
+// Nonce tracking and key rotation
+static NonceTracker gDeviceNonceTracker;
+static KeyRotationPolicy gDeviceKeyRotation;
+static uint32_t gCurrentNonce = 0;
+
+// Adaptive Switchboard (global)
+static AdaptiveSwitchboard adaptiveSwitchboard;
+
+// Time utility function (milliseconds since boot)
+#define GET_TIME_MS() (millis())
+
 // Salt metadata used in packet formatting
 struct SaltMeta {
   uint16_t pos;
@@ -100,6 +166,49 @@ static void pipelineEncryptPacket(const DerivedKeys& baseKeys,
                                   uint8_t salt_len, uint16_t salt_pos, uint16_t payload_len,
                                   std::vector<uint8_t>& packet,
                                   bool verbose);
+
+// ===== Adaptive Switchboard integration =====
+static void setupAdaptiveSystem() {
+  if (!adaptiveSwitchboard.initialize("./heuristics.json")) {
+    Serial.println("[-] Failed to load heuristics");
+    return;
+  }
+  adaptiveSwitchboard.enableZTM(true);  // Enable Zero Trust Mode
+  Serial.println("[+] Adaptive switchboard initialized");
+}
+
+static bool encryptWithAdaptive(const uint8_t* plaintext, size_t ptLen,
+                                uint8_t* ciphertext, size_t& ctLen,
+                                const uint8_t* key, const uint8_t* nonce) {
+  // Try encryption with current mode
+  size_t result = adaptiveSwitchboard.encrypt(
+      plaintext, ptLen, ciphertext,
+      key, 16, nonce, 4);
+
+  if (result == 0) {
+    adaptiveSwitchboard.recordEvent("encrypt_failure");
+    return false;
+  }
+
+  ctLen = result;
+
+  // Periodically evaluate threat
+  static int callCount = 0;
+  if (++callCount % 10 == 0) {
+    OperationalMode newMode = adaptiveSwitchboard.evaluateAndUpdate();
+    if (newMode != OperationalMode::STANDARD) {
+      Serial.println(String("[!] Mode switched: ") + adaptiveSwitchboard.getStatusReport().c_str());
+    }
+  }
+
+  return true;
+}
+
+// Simple metric stubs (replace with real measurements if available)
+static float measureEntropy() { return 7.9f; }
+static uint32_t measureLatency() { return 0; }
+static float measureCpuUsage() { return 0.20f; }
+// ===== End Adaptive Switchboard integration =====
 
 // Utility functions
 static void hexPrint(const char* label, const uint8_t* data, size_t n) {
@@ -493,7 +602,11 @@ static bool encrypt_and_send_health_data() {
   
   size_t plainLen = strlen(healthBuffer);
   GridSpec grid = selectGrid(plainLen);
-  uint32_t nonce = esp_random();
+  
+  // Use managed nonce instead of random
+  uint32_t nonce = nonce_tracker_get_next(&gDeviceNonceTracker);
+  nonce_tracker_mark_used(&gDeviceNonceTracker, nonce, GET_TIME_MS());
+  
   std::vector<uint8_t> packet;
   
   // Encrypt with verbose output for first few packets
@@ -815,6 +928,8 @@ void handle_communication_state() {
         if (encrypt_and_send_health_data()) {
           retryCount = 0;
           lastHealthSend = millis();
+          // Update key rotation after each message
+          key_rotation_update(&gDeviceKeyRotation);
         } else {
           retryCount++;
           if (retryCount >= MAX_RETRIES) {
@@ -934,10 +1049,45 @@ void setup() {
   // Initialize WiFi event handler
   WiFi.onEvent(onWiFiEvent);
   
+  // Initialize nonce tracker and key rotation
+  nonce_tracker_init(&gDeviceNonceTracker, false);
+  key_rotation_init(&gDeviceKeyRotation);
+
+  // Initialize adaptive system
+  setupAdaptiveSystem();
+  
   Serial.println("Starting communication state machine...");
 }
 
 void loop() {
   handle_communication_state();
+  
+  // Check if key rotation needed
+  if (masterKeyReady && key_rotation_is_needed(&gDeviceKeyRotation, GET_TIME_MS())) {
+    Serial.println("Key rotation triggered - regenerating master key");
+    
+    // Regenerate master key
+    if (generate_and_encrypt_master_key()) {
+      key_rotation_mark_completed(&gDeviceKeyRotation);
+      
+      // Re-derive symmetric keys
+      if (derive_symmetric_keys()) {
+        Serial.printf("\xe2\x9c\x93 Key rotation completed (rotation #%u)\n",
+                     gDeviceKeyRotation.rotation_counter);
+      }
+    }
+  }
+
+  // Periodic metric updates (every 5 seconds)
+  static unsigned long lastMetricsTime = 0;
+  if (millis() - lastMetricsTime > 5000) {
+    HeuristicMetrics metrics;
+    metrics.entropy = measureEntropy();
+    metrics.latency = measureLatency();
+    metrics.cpuUsage = measureCpuUsage();
+    adaptiveSwitchboard.recordMetric(metrics);
+    lastMetricsTime = millis();
+  }
+  
   delay(100);
 }

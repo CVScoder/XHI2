@@ -22,6 +22,18 @@
     <ClCompile Include="D:\Projects\XHI2\XenoCipher_Healthcare_IoT\lib\Transposition\src\transposition.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="D:\Projects\XHI2\XenoCipher_Healthcare_IoT\lib\Adaptive_Switchboard\src\adaptive_switchboard.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="D:\Projects\XHI2\XenoCipher_Healthcare_IoT\lib\Heuristics_Manager\src\heuristics_manager.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="D:\Projects\XHI2\XenoCipher_Healthcare_IoT\lib\ChaCha20\src\chacha20_impl.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="D:\Projects\XHI2\XenoCipher_Healthcare_IoT\lib\Salsa20\src\salsa20_impl.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <CustomBuild Include="D:\Projects\XHI2\XenoCipher_Healthcare_IoT\server\CMakeLists.txt" />

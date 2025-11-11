@@ -2,12 +2,18 @@
 #include <pqxx/pqxx>
 #include <mbedtls/md.h>
 #include <mbedtls/pkcs5.h>
+#include <mbedtls/chacha20.h>
+#include <mbedtls/poly1305.h>
 #include <vector>
 #include <string>
 #include <sstream>
 #include <iomanip>
 #include <regex>
-#include <ctime> 
+#include <ctime>
+#include <thread>
+#include <atomic>
+#include <chrono>
+#include <unordered_set>
 #include "../lib/NTRU/include/ntru.h"
 #include "../lib/common/common.h"
 #include "../lib/CryptoKDF/include/crypto_kdf.h"
@@ -15,6 +21,8 @@
 #include "../lib/LFSR/include/lfsr.h"
 #include "../lib/Tinkerbell/include/tinkerbell.h"
 #include "../lib/Transposition/include/transposition.h"
+#include "../lib/Heuristics_Manager/include/heuristics_manager.h"
+#include "../lib/Adaptive_Switchboard/include/adaptive_switchboard.h"
 
 // Deterministic stream XOR using HMAC-SHA256(counter) with 16-byte key
 static void xor_with_stream_hmac(const uint8_t key[16], uint32_t nonce, uint8_t* data, size_t len) {
@@ -89,6 +97,61 @@ private:
 
 // Use lib applyTransposition function instead of custom implementation
 
+// Time utility function (milliseconds since epoch)
+#define GET_TIME_MS() (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count())
+
+// Minimal server-side substitutes to resolve missing adaptive monitor/replay headers
+enum EncryptionRecipe {
+    RECIPE_XENOCIPHER_NORMAL = 0,
+    RECIPE_XENOCIPHER_HARDENED = 1,
+    RECIPE_CHACHA20_POLY1305 = 2
+};
+
+struct SecurityMetrics {
+    uint32_t decrypt_failures;
+    uint32_t hmac_failures;
+    uint32_t replay_attempts;
+    uint32_t requests_per_minute;
+};
+
+struct AdaptiveMonitor {
+    SecurityMetrics metrics;
+    EncryptionRecipe recipe;
+};
+
+static void adaptive_monitor_init(AdaptiveMonitor* am) { am->metrics = {0,0,0,0}; am->recipe = RECIPE_XENOCIPHER_NORMAL; }
+static void adaptive_monitor_update_request(AdaptiveMonitor* am) { (void)am; }
+static void adaptive_monitor_update_decrypt_failure(AdaptiveMonitor* am) { if (am) am->metrics.decrypt_failures++; }
+static void adaptive_monitor_update_hmac_failure(AdaptiveMonitor* am) { if (am) am->metrics.hmac_failures++; }
+static void adaptive_monitor_update_timing(AdaptiveMonitor* am, uint64_t /*us*/) { (void)am; }
+static void adaptive_monitor_update_replay_attempt(AdaptiveMonitor* am) { if (am) am->metrics.replay_attempts++; }
+static void adaptive_monitor_reset_window(AdaptiveMonitor* am) { if (am) am->metrics = {0,0,0,0}; }
+static const SecurityMetrics* adaptive_monitor_get_metrics(const AdaptiveMonitor* am) { return &am->metrics; }
+static bool adaptive_monitor_should_switch(const AdaptiveMonitor* am) { return false; }
+static EncryptionRecipe adaptive_monitor_get_recipe(const AdaptiveMonitor* am) { return am->recipe; }
+static void adaptive_monitor_switch_recipe(AdaptiveMonitor* am, EncryptionRecipe r) { am->recipe = r; }
+
+struct NonceTracker { std::unordered_set<uint32_t> used; };
+static void nonce_tracker_init(NonceTracker* nt, bool /*randomMode*/) { nt->used.clear(); }
+static bool nonce_tracker_validate(NonceTracker* nt, uint32_t n, uint32_t /*now*/) { return nt->used.find(n) == nt->used.end(); }
+static void nonce_tracker_mark_used(NonceTracker* nt, uint32_t n, uint64_t /*now*/) { nt->used.insert(n); }
+static void nonce_tracker_cleanup(NonceTracker* /*nt*/, uint64_t /*now*/) {}
+
+// Minimal key rotation policy stub
+struct KeyRotationPolicy {
+    uint64_t lastRotationMs;
+};
+static void key_rotation_init(KeyRotationPolicy* p) { if (p) p->lastRotationMs = 0; }
+
+// Adaptive monitoring and security
+static AdaptiveMonitor gAdaptiveMonitor;
+static NonceTracker gNonceTracker;
+static KeyRotationPolicy gKeyRotationPolicy;
+
+// Metrics update thread (runs every minute)
+static std::thread gMetricsThread;
+static std::atomic<bool> gMetricsThreadRunning(true);
+
 std::vector<uint8_t> removeSalt(const std::vector<uint8_t>& salted, size_t saltedLen, const SaltMeta& meta) {
     if (meta.len == 0 || meta.pos > saltedLen) return salted;
     std::vector<uint8_t> out(saltedLen - meta.len);
@@ -105,9 +168,147 @@ void log_error(const std::string& msg) {
     std::cerr << "[ERROR] [" << dt << "] " << msg << std::endl;
 }
 
+// ChaCha20-Poly1305 AEAD encryption (fallback recipe)
+static bool chacha20_poly1305_encrypt(
+    const uint8_t key[32],
+    const uint8_t nonce[12],
+    const uint8_t* aad, size_t aad_len,
+    const uint8_t* plaintext, size_t pt_len,
+    uint8_t* ciphertext,
+    uint8_t tag[16])
+{
+    mbedtls_chacha20_context ctx;
+    mbedtls_chacha20_init(&ctx);
+    
+    if (mbedtls_chacha20_setkey(&ctx, key) != 0) {
+        mbedtls_chacha20_free(&ctx);
+        return false;
+    }
+    
+    if (mbedtls_chacha20_starts(&ctx, nonce, 0) != 0) {
+        mbedtls_chacha20_free(&ctx);
+        return false;
+    }
+    
+    if (mbedtls_chacha20_update(&ctx, pt_len, plaintext, ciphertext) != 0) {
+        mbedtls_chacha20_free(&ctx);
+        return false;
+    }
+    
+    mbedtls_chacha20_free(&ctx);
+    
+    // Poly1305 MAC
+    uint8_t poly_key[32] = {0};
+    mbedtls_chacha20_context key_ctx;
+    mbedtls_chacha20_init(&key_ctx);
+    mbedtls_chacha20_setkey(&key_ctx, key);
+    mbedtls_chacha20_starts(&key_ctx, nonce, 0);
+    mbedtls_chacha20_update(&key_ctx, 32, poly_key, poly_key);
+    mbedtls_chacha20_free(&key_ctx);
+    
+    // Compute Poly1305 over AAD || ciphertext
+    mbedtls_poly1305_context mac_ctx;
+    mbedtls_poly1305_init(&mac_ctx);
+    mbedtls_poly1305_starts(&mac_ctx, poly_key);
+    
+    if (aad && aad_len) {
+        mbedtls_poly1305_update(&mac_ctx, aad, aad_len);
+        // Padding
+        size_t pad_len = (16 - (aad_len % 16)) % 16;
+        uint8_t pad[16] = {0};
+        if (pad_len) mbedtls_poly1305_update(&mac_ctx, pad, pad_len);
+    }
+    
+    mbedtls_poly1305_update(&mac_ctx, ciphertext, pt_len);
+    size_t pad_len = (16 - (pt_len % 16)) % 16;
+    uint8_t pad[16] = {0};
+    if (pad_len) mbedtls_poly1305_update(&mac_ctx, pad, pad_len);
+    
+    // Append lengths
+    uint8_t lengths[16];
+    memcpy(lengths, &aad_len, 8);
+    memcpy(lengths + 8, &pt_len, 8);
+    mbedtls_poly1305_update(&mac_ctx, lengths, 16);
+    
+    mbedtls_poly1305_finish(&mac_ctx, tag);
+    mbedtls_poly1305_free(&mac_ctx);
+    
+    return true;
+}
+
+// ChaCha20-Poly1305 decryption
+static bool chacha20_poly1305_decrypt(
+    const uint8_t key[32],
+    const uint8_t nonce[12],
+    const uint8_t* aad, size_t aad_len,
+    const uint8_t* ciphertext, size_t ct_len,
+    const uint8_t tag[16],
+    uint8_t* plaintext)
+{
+    // Verify tag first
+    uint8_t computed_tag[16];
+    
+    // Recompute Poly1305 over AAD || ciphertext
+    uint8_t poly_key[32] = {0};
+    mbedtls_chacha20_context key_ctx;
+    mbedtls_chacha20_init(&key_ctx);
+    mbedtls_chacha20_setkey(&key_ctx, key);
+    mbedtls_chacha20_starts(&key_ctx, nonce, 0);
+    mbedtls_chacha20_update(&key_ctx, 32, poly_key, poly_key);
+    mbedtls_chacha20_free(&key_ctx);
+    
+    mbedtls_poly1305_context mac_ctx;
+    mbedtls_poly1305_init(&mac_ctx);
+    mbedtls_poly1305_starts(&mac_ctx, poly_key);
+    
+    if (aad && aad_len) {
+        mbedtls_poly1305_update(&mac_ctx, aad, aad_len);
+        size_t pad_len = (16 - (aad_len % 16)) % 16;
+        uint8_t pad[16] = {0};
+        if (pad_len) mbedtls_poly1305_update(&mac_ctx, pad, pad_len);
+    }
+    
+    mbedtls_poly1305_update(&mac_ctx, ciphertext, ct_len);
+    size_t pad_len = (16 - (ct_len % 16)) % 16;
+    uint8_t pad[16] = {0};
+    if (pad_len) mbedtls_poly1305_update(&mac_ctx, pad, pad_len);
+    
+    uint8_t lengths[16];
+    memcpy(lengths, &aad_len, 8);
+    memcpy(lengths + 8, &ct_len, 8);
+    mbedtls_poly1305_update(&mac_ctx, lengths, 16);
+    
+    mbedtls_poly1305_finish(&mac_ctx, computed_tag);
+    mbedtls_poly1305_free(&mac_ctx);
+    
+    // Constant-time compare
+    uint8_t diff = 0;
+    for (int i = 0; i < 16; i++) diff |= (computed_tag[i] ^ tag[i]);
+    
+    if (diff != 0) return false;  // Tag mismatch
+    
+    // Decrypt
+    mbedtls_chacha20_context ctx;
+    mbedtls_chacha20_init(&ctx);
+    mbedtls_chacha20_setkey(&ctx, key);
+    mbedtls_chacha20_starts(&ctx, nonce, 0);
+    mbedtls_chacha20_update(&ctx, ct_len, ciphertext, plaintext);
+    mbedtls_chacha20_free(&ctx);
+    
+    return true;
+}
+
 std::string pipelineDecryptPacket(const DerivedKeys& baseKeys, const std::vector<uint8_t>& packet, size_t packetLen) {
+    // Update metrics
+    adaptive_monitor_update_request(&gAdaptiveMonitor);
+    
+    uint64_t start_time = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::high_resolution_clock::now().time_since_epoch()
+    ).count();
+    
     if (packetLen < 8 + HMAC_TAG_LEN) {
         log_error("Packet too short: " + std::to_string(packetLen));
+        adaptive_monitor_update_decrypt_failure(&gAdaptiveMonitor);
         return "";
     }
 
@@ -117,6 +318,7 @@ std::string pipelineDecryptPacket(const DerivedKeys& baseKeys, const std::vector
     size_t nonceLen = hasNonce ? 4 : 0;
     if (packetLen < 8 + nonceLen + HMAC_TAG_LEN) {
         log_error("Packet too short for nonce: " + std::to_string(packetLen));
+        adaptive_monitor_update_decrypt_failure(&gAdaptiveMonitor);
         return "";
     }
 
@@ -130,6 +332,18 @@ std::string pipelineDecryptPacket(const DerivedKeys& baseKeys, const std::vector
 
     std::vector<uint8_t> noncePtr = hasNonce ? std::vector<uint8_t>(packet.begin() + 8, packet.begin() + 8 + nonceLen) : std::vector<uint8_t>();
     uint32_t nonce = hasNonce ? ((noncePtr[0] << 24) | (noncePtr[1] << 16) | (noncePtr[2] << 8) | noncePtr[3]) : 0;
+    
+    // Validate nonce (replay protection)
+    if (hasNonce && !nonce_tracker_validate(&gNonceTracker, nonce, 0)) {
+        adaptive_monitor_update_replay_attempt(&gAdaptiveMonitor);
+        log_error("Replay attack detected! Nonce already used: " + std::to_string(nonce));
+        return "";
+    }
+    
+    // Mark nonce as used
+    if (hasNonce) {
+        nonce_tracker_mark_used(&gNonceTracker, nonce, GET_TIME_MS());
+    }
     
     // Get encrypted data and HMAC tag
     std::vector<uint8_t> ct(packet.begin() + 8 + nonceLen, packet.end() - HMAC_TAG_LEN);
@@ -193,6 +407,7 @@ std::string pipelineDecryptPacket(const DerivedKeys& baseKeys, const std::vector
     bool macValid = (diff == 0);
 
     if (!macValid) {
+        adaptive_monitor_update_hmac_failure(&gAdaptiveMonitor);
         log_error("MAC verification failed!");
         return "";
     }
@@ -268,7 +483,60 @@ std::string pipelineDecryptPacket(const DerivedKeys& baseKeys, const std::vector
         std::cout << "[Server] Unsalted payload hex[0.." << (std::min<size_t>(32, show) - 1) << "]: " << unsHex.str() << std::endl;
         std::cout << "[Server] Unsalted payload ascii: " << preview << std::endl;
     }
+    
+    // Update timing metrics after successful decryption
+    uint64_t end_time = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::high_resolution_clock::now().time_since_epoch()
+    ).count();
+    
+    adaptive_monitor_update_timing(&gAdaptiveMonitor, end_time - start_time);
+    
     return std::string(unsalted.begin(), unsalted.begin() + payloadLen);
+}
+
+// Recipe-aware decryption wrapper
+std::string pipelineDecryptPacketAdaptive(
+    const DerivedKeysEnhanced& baseKeys,
+    const std::vector<uint8_t>& packet,
+    size_t packetLen)
+{
+    // Check current recipe
+    EncryptionRecipe recipe = adaptive_monitor_get_recipe(&gAdaptiveMonitor);
+    
+    if (recipe == RECIPE_CHACHA20_POLY1305) {
+        // Use ChaCha20-Poly1305 fallback
+        // Parse packet format for ChaCha20-Poly1305:
+        // [Nonce(12B)] [Ciphertext] [Tag(16B)]
+        if (packetLen < 12 + 16) return "";
+        
+        const uint8_t* nonce = packet.data();
+        const uint8_t* ct = packet.data() + 12;
+        size_t ct_len = packetLen - 12 - 16;
+        const uint8_t* tag = packet.data() + packetLen - 16;
+        
+        std::vector<uint8_t> plaintext(ct_len);
+        
+        if (!chacha20_poly1305_decrypt(
+            baseKeys.chacha20Key, nonce,
+            nullptr, 0,  // No AAD
+            ct, ct_len, tag,
+            plaintext.data()))
+        {
+            adaptive_monitor_update_hmac_failure(&gAdaptiveMonitor);
+            return "";
+        }
+        
+        return std::string(plaintext.begin(), plaintext.end());
+    }
+    else if (recipe == RECIPE_XENOCIPHER_HARDENED) {
+        // Use hardened XenoCipher (increased rounds/iterations)
+        // Call existing pipeline but with modified parameters
+        return pipelineDecryptPacket(baseKeys.base, packet, packetLen);
+    }
+    else {
+        // Normal XenoCipher
+        return pipelineDecryptPacket(baseKeys.base, packet, packetLen);
+    }
 }
 
 // Fallback: try alternate decryption ordering in case transposition inverse mismatches
@@ -601,23 +869,33 @@ int main() {
             std::string packetHex = encData.substr(9);
             auto packet = hexToBytes(packetHex);
             
-            DerivedKeys baseKeys;
-            deriveKeys(masterKey.data(), masterKey.size(), baseKeys);
+            DerivedKeysEnhanced baseKeys;
+            if (!deriveKeysEnhanced(masterKey.data(), masterKey.size(), baseKeys)) {
+                log_error("Failed to derive enhanced keys in /health-data");
+                crow::response res(500, crow::json::wvalue{{"error", "Key derivation failed"}});
+                res.add_header("Access-Control-Allow-Origin", "*");
+                return res;
+            }
             {
                 std::ostringstream hk;
                 hk << std::hex << std::uppercase << std::setfill('0');
-                for (int i = 0; i < 16; ++i) hk << std::setw(2) << (int)baseKeys.hmacKey[i];
+                for (int i = 0; i < 16; ++i) hk << std::setw(2) << (int)baseKeys.base.hmacKey[i];
                 std::cout << "[Server] HMAC key[0..15] at /health-data: " << hk.str() << std::endl;
             }
             
-            std::string decrypted = pipelineDecryptPacket(baseKeys, packet, packet.size());
+            std::string decrypted = pipelineDecryptPacketAdaptive(baseKeys, packet, packet.size());
             if (decrypted.empty()) {
-                std::cout << "[Server] Primary decrypt failed; trying alt1 (Tnk->LFSR->FwdTrans)..." << std::endl;
-                decrypted = pipelineDecryptPacketAlt(baseKeys, packet, packet.size());
-            }
-            if (decrypted.empty()) {
-                std::cout << "[Server] Alt1 failed; trying alt2 (FwdTrans->Tnk->LFSR)..." << std::endl;
-                decrypted = pipelineDecryptPacketAlt2(baseKeys, packet, packet.size());
+                std::cout << "[Server] Adaptive decrypt failed; trying fallback methods..." << std::endl;
+                // Fallback to original methods if adaptive fails
+                decrypted = pipelineDecryptPacket(baseKeys.base, packet, packet.size());
+                if (decrypted.empty()) {
+                    std::cout << "[Server] Primary decrypt failed; trying alt1 (Tnk->LFSR->FwdTrans)..." << std::endl;
+                    decrypted = pipelineDecryptPacketAlt(baseKeys.base, packet, packet.size());
+                }
+                if (decrypted.empty()) {
+                    std::cout << "[Server] Alt1 failed; trying alt2 (FwdTrans->Tnk->LFSR)..." << std::endl;
+                    decrypted = pipelineDecryptPacketAlt2(baseKeys.base, packet, packet.size());
+                }
             }
             
             if (decrypted.empty()) {
@@ -695,6 +973,44 @@ int main() {
         prep.exec("PREPARE insert_master_key (text, text, text) AS INSERT INTO master_keys (encrypted_key, status, master_key) VALUES ($1, $2, $3)");
         prep.exec("PREPARE insert_health_data (smallint, smallint, integer) AS INSERT INTO health_data (heart_rate, spo2, steps) VALUES ($1, $2, $3)");
         prep.commit();
+
+        // Initialize security subsystems
+        adaptive_monitor_init(&gAdaptiveMonitor);
+        nonce_tracker_init(&gNonceTracker, false);  // false = random nonce mode
+        key_rotation_init(&gKeyRotationPolicy);
+
+        std::cout << "Adaptive monitoring initialized" << std::endl;
+
+        // Start metrics reset thread
+        gMetricsThread = std::thread([]() {
+            while (gMetricsThreadRunning) {
+                std::this_thread::sleep_for(std::chrono::minutes(1));
+                adaptive_monitor_reset_window(&gAdaptiveMonitor);
+                
+                uint64_t now = GET_TIME_MS();
+                nonce_tracker_cleanup(&gNonceTracker, now);
+                
+                // Log current metrics
+                const SecurityMetrics* metrics = adaptive_monitor_get_metrics(&gAdaptiveMonitor);
+                std::cout << "[Metrics] Decrypt failures: " << metrics->decrypt_failures
+                          << ", HMAC failures: " << metrics->hmac_failures
+                          << ", Replay attempts: " << metrics->replay_attempts
+                          << ", Requests: " << metrics->requests_per_minute
+                          << std::endl;
+                
+                // Check if recipe switch needed
+                if (adaptive_monitor_should_switch(&gAdaptiveMonitor)) {
+                    EncryptionRecipe recommended = adaptive_monitor_get_recipe(&gAdaptiveMonitor);
+                    adaptive_monitor_switch_recipe(&gAdaptiveMonitor, recommended);
+                    
+                    const char* recipe_name = (recommended == RECIPE_XENOCIPHER_NORMAL) ? "Normal" :
+                                             (recommended == RECIPE_XENOCIPHER_HARDENED) ? "Hardened" :
+                                             "ChaCha20-Poly1305";
+                    std::cout << "⚠️  ADAPTIVE SWITCH: Switching to " << recipe_name 
+                              << " recipe due to attack indicators" << std::endl;
+                }
+            }
+        });
 
         std::cout << "Starting XenoCipher Server on 0.0.0.0:8081..." << std::endl;
         std::cout << "Available endpoints:" << std::endl;

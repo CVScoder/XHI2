@@ -242,4 +242,7 @@
  lib/common/common.h lib/CryptoKDF/include/crypto_kdf.h \
  lib/LFSR/include/lfsr.h lib/Tinkerbell/include/tinkerbell.h \
  lib/Transposition/include/transposition.h lib/HMAC/include/hmac.h \
- lib/Entropy/include/entropy.h src/../lib/NTRU/include/ntru.h
+ lib/Entropy/include/entropy.h src/../lib/NTRU/include/ntru.h \
+ src/../lib/Adaptive_Switchboard/include/adaptive_switchboard.h \
+ lib/Heuristics_Manager/include/heuristics_manager.h \
+ lib/ChaCha20/include/chacha20_impl.h lib/Salsa20/include/salsa20_impl.h

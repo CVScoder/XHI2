@@ -30,6 +30,10 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/../lib/LFSR/include
     ${CMAKE_CURRENT_SOURCE_DIR}/../lib/Tinkerbell/include
     ${CMAKE_CURRENT_SOURCE_DIR}/../lib/Transposition/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../lib/Adaptive_Switchboard/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../lib/Heuristics_Manager/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../lib/ChaCha20/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../lib/Salsa20/include
     ${CMAKE_CURRENT_SOURCE_DIR}/../lib/common
     ${MbedTLS_INCLUDE_DIRS}
 )
@@ -45,6 +49,10 @@ add_executable(server
     ${CMAKE_CURRENT_SOURCE_DIR}/../lib/LFSR/src/lfsr.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../lib/Tinkerbell/src/tinkerbell.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../lib/Transposition/src/transposition.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../lib/Adaptive_Switchboard/src/adaptive_switchboard.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../lib/Heuristics_Manager/src/heuristics_manager.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../lib/ChaCha20/src/chacha20_impl.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../lib/Salsa20/src/salsa20_impl.cpp
 )
 
 # Link libraries
