@@ -1,0 +1,1023 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>XenoCipher Healthcare IoT Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/animejs@3.2.1/lib/anime.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+        
+        * {
+            font-family: 'Inter', sans-serif;
+        }
+        
+        .glass-morphism {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+        
+        .neon-border {
+            box-shadow: 0 0 20px rgba(59, 130, 246, 0.5),
+                        inset 0 0 20px rgba(59, 130, 246, 0.1);
+        }
+        
+        .pulse-animation {
+            animation: pulse 2s infinite;
+        }
+        
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.7; }
+            100% { opacity: 1; }
+        }
+        
+        .status-indicator {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 8px;
+        }
+        
+        .status-online { background-color: #10b981; }
+        .status-warning { background-color: #f59e0b; }
+        .status-error { background-color: #ef4444; }
+        .status-offline { background-color: #6b7280; }
+        
+        .metric-card {
+            transition: all 0.3s ease;
+        }
+        
+        .metric-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+        }
+        
+        .recipe-tile {
+            transition: all 0.3s ease;
+            cursor: pointer;
+        }
+        
+        .recipe-tile:hover {
+            transform: scale(1.05);
+        }
+        
+        .recipe-tile.active {
+            border-color: #3b82f6;
+            background: linear-gradient(135deg, rgba(59, 130, 246, 0.1), rgba(147, 51, 234, 0.1));
+        }
+        
+        .log-entry {
+            animation: slideIn 0.3s ease;
+        }
+        
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateX(-20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateX(0);
+            }
+        }
+        
+        .notification {
+            animation: slideDown 0.5s ease;
+        }
+        
+        @keyframes slideDown {
+            from {
+                opacity: 0;
+                transform: translateY(-20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        
+        body {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+        
+        .chart-container {
+            position: relative;
+            height: 300px;
+        }
+        
+        .timeline-item {
+            position: relative;
+            padding-left: 40px;
+            margin-bottom: 20px;
+        }
+        
+        .timeline-item::before {
+            content: '';
+            position: absolute;
+            left: 9px;
+            top: 20px;
+            height: calc(100% + 10px);
+            width: 2px;
+            background: rgba(255, 255, 255, 0.3);
+        }
+        
+        .timeline-dot {
+            position: absolute;
+            left: 5px;
+            top: 5px;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #3b82f6;
+        }
+    </style>
+<script src="https://sites.super.myninja.ai/_assets/ninja-daytona-script.js"></script>
+</head>
+<body class="text-white">
+    <!-- Header -->
+    <header class="glass-morphism sticky top-0 z-50 border-b border-white/20">
+        <div class="container mx-auto px-4 py-4">
+            <div class="flex items-center justify-between">
+                <div class="flex items-center space-x-4">
+                    <div class="flex items-center space-x-2">
+                        <i class="fas fa-shield-alt text-2xl text-blue-400"></i>
+                        <h1 class="text-2xl font-bold">XenoCipher Dashboard</h1>
+                    </div>
+                    <div class="flex items-center space-x-2">
+                        <span class="status-indicator status-online pulse-animation"></span>
+                        <span class="text-sm">System Online</span>
+                    </div>
+                </div>
+                <div class="flex items-center space-x-4">
+                    <span id="current-time" class="text-sm"></span>
+                    <button onclick="toggleFullscreen()" class="px-3 py-1 glass-morphism rounded hover:bg-white/20">
+                        <i class="fas fa-expand"></i>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="container mx-auto px-4 py-6">
+        <!-- Status Bar -->
+        <section class="mb-6">
+            <div class="glass-morphism rounded-lg p-4 neon-border">
+                <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+                    <div class="text-center">
+                        <div class="text-3xl font-bold text-blue-400" id="active-recipe">FULL_STACK</div>
+                        <div class="text-sm opacity-75">Active Recipe</div>
+                    </div>
+                    <div class="text-center">
+                        <div class="text-3xl font-bold text-green-400" id="server-mode">NORMAL</div>
+                        <div class="text-sm opacity-75">Server Mode</div>
+                    </div>
+                    <div class="text-center">
+                        <div class="text-3xl font-bold text-yellow-400" id="packet-count">0</div>
+                        <div class="text-sm opacity-75">Total Packets</div>
+                    </div>
+                    <div class="text-center">
+                        <div class="text-3xl font-bold text-red-400" id="failure-rate">0%</div>
+                        <div class="text-sm opacity-75">Failure Rate</div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Controls Section -->
+        <section class="mb-6">
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <!-- Recipe Selector -->
+                <div class="glass-morphism rounded-lg p-6">
+                    <h2 class="text-xl font-semibold mb-4 flex items-center">
+                        <i class="fas fa-sliders-h mr-2"></i>
+                        Recipe Selector
+                    </h2>
+                    <div class="grid grid-cols-2 gap-4 mb-4">
+                        <div class="recipe-tile glass-morphism rounded-lg p-4 border-2 border-transparent" 
+                             onclick="selectRecipe('FULL_STACK')" data-recipe="FULL_STACK">
+                            <h3 class="font-semibold text-blue-400">FULL_STACK</h3>
+                            <p class="text-xs opacity-75 mb-2">Maximum Security</p>
+                            <div class="text-xs">
+                                <div class="mb-1">• LFSR • Tinkerbell</div>
+                                <div class="mb-1">• ChaCha20 • Salsa20</div>
+                                <div>• Transposition</div>
+                            </div>
+                            <div class="mt-2 text-xs text-yellow-400">CPU: 180%</div>
+                        </div>
+                        
+                        <div class="recipe-tile glass-morphism rounded-lg p-4 border-2 border-transparent" 
+                             onclick="selectRecipe('CHACHA_HEAVY')" data-recipe="CHACHA_HEAVY">
+                            <h3 class="font-semibold text-green-400">CHACHA_HEAVY</h3>
+                            <p class="text-xs opacity-75 mb-2">ChaCha20 Focus</p>
+                            <div class="text-xs">
+                                <div class="mb-1">• LFSR • Tinkerbell</div>
+                                <div class="mb-1">• ChaCha20</div>
+                                <div>• Transposition</div>
+                            </div>
+                            <div class="mt-2 text-xs text-yellow-400">CPU: 140%</div>
+                        </div>
+                        
+                        <div class="recipe-tile glass-morphism rounded-lg p-4 border-2 border-transparent" 
+                             onclick="selectRecipe('SALSA_LIGHT')" data-recipe="SALSA_LIGHT">
+                            <h3 class="font-semibold text-yellow-400">SALSA_LIGHT</h3>
+                            <p class="text-xs opacity-75 mb-2">Lightweight</p>
+                            <div class="text-xs">
+                                <div class="mb-1">• LFSR</div>
+                                <div class="mb-1">• Salsa20</div>
+                            </div>
+                            <div class="mt-2 text-xs text-yellow-400">CPU: 120%</div>
+                        </div>
+                        
+                        <div class="recipe-tile glass-morphism rounded-lg p-4 border-2 border-transparent" 
+                             onclick="selectRecipe('CHAOS_ONLY')" data-recipe="CHAOS_ONLY">
+                            <h3 class="font-semibold text-purple-400">CHAOS_ONLY</h3>
+                            <p class="text-xs opacity-75 mb-2">Chaos Algorithms</p>
+                            <div class="text-xs">
+                                <div class="mb-1">• LFSR • Tinkerbell</div>
+                                <div>• Transposition</div>
+                            </div>
+                            <div class="mt-2 text-xs text-yellow-400">CPU: 100%</div>
+                        </div>
+                        
+                        <div class="recipe-tile glass-morphism rounded-lg p-4 border-2 border-transparent" 
+                             onclick="selectRecipe('STREAM_FOCUS')" data-recipe="STREAM_FOCUS">
+                            <h3 class="font-semibold text-cyan-400">STREAM_FOCUS</h3>
+                            <p class="text-xs opacity-75 mb-2">Stream Ciphers</p>
+                            <div class="text-xs">
+                                <div class="mb-1">• LFSR</div>
+                                <div class="mb-1">• ChaCha20 • Salsa20</div>
+                            </div>
+                            <div class="mt-2 text-xs text-yellow-400">CPU: 130%</div>
+                        </div>
+                    </div>
+                    <button onclick="applySelectedRecipe()" 
+                            class="w-full bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded-lg transition-colors">
+                        <i class="fas fa-play mr-2"></i>Apply Recipe
+                    </button>
+                </div>
+
+                <!-- Mode Controls -->
+                <div class="glass-morphism rounded-lg p-6">
+                    <h2 class="text-xl font-semibold mb-4 flex items-center">
+                        <i class="fas fa-cog mr-2"></i>
+                        System Controls
+                    </h2>
+                    
+                    <!-- Mode Toggle -->
+                    <div class="mb-6">
+                        <label class="block text-sm font-medium mb-2">Operating Mode</label>
+                        <div class="flex space-x-4">
+                            <button onclick="setMode('NORMAL')" id="mode-normal"
+                                    class="flex-1 px-4 py-2 glass-morphism rounded-lg border-2 border-green-400 transition-colors">
+                                <i class="fas fa-shield-alt mr-2"></i>Normal Mode
+                            </button>
+                            <button onclick="setMode('ZTM')" id="mode-ztm"
+                                    class="flex-1 px-4 py-2 glass-morphism rounded-lg border-2 border-transparent transition-colors">
+                                <i class="fas fa-lock mr-2"></i>Zero Trust Mode
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Feature Toggles -->
+                    <div class="space-y-4">
+                        <label class="flex items-center justify-between">
+                            <span>Auto-switching</span>
+                            <input type="checkbox" id="auto-switching" onchange="toggleAutoSwitching()" 
+                                   class="w-5 h-5 rounded">
+                        </label>
+                        <label class="flex items-center justify-between">
+                            <span>Heuristics</span>
+                            <input type="checkbox" id="heuristics" checked onchange="toggleHeuristics()" 
+                                   class="w-5 h-5 rounded">
+                        </label>
+                        <label class="flex items-center justify-between">
+                            <span>Notifications</span>
+                            <input type="checkbox" id="notifications" checked onchange="toggleNotifications()" 
+                                   class="w-5 h-5 rounded">
+                        </label>
+                    </div>
+
+                    <!-- Simulation Controls -->
+                    <div class="mt-6 space-y-2">
+                        <button onclick="simulateAttack('packet_flood')" 
+                                class="w-full bg-orange-600 hover:bg-orange-700 px-4 py-2 rounded-lg transition-colors">
+                            <i class="fas fa-exclamation-triangle mr-2"></i>Simulate Packet Flood
+                        </button>
+                        <button onclick="exportLogs()" 
+                                class="w-full bg-gray-600 hover:bg-gray-700 px-4 py-2 rounded-lg transition-colors">
+                            <i class="fas fa-download mr-2"></i>Export Logs
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Telemetry Section -->
+        <section class="mb-6">
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                <!-- Live Health Feed -->
+                <div class="glass-morphism rounded-lg p-6">
+                    <h2 class="text-xl font-semibold mb-4 flex items-center">
+                        <i class="fas fa-heartbeat mr-2 text-red-400"></i>
+                        Live Health Feed
+                    </h2>
+                    <div id="health-feed" class="space-y-3 max-h-64 overflow-y-auto">
+                        <!-- Health data will be inserted here -->
+                    </div>
+                </div>
+
+                <!-- Charts -->
+                <div class="lg:col-span-2 space-y-6">
+                    <!-- HR Chart -->
+                    <div class="glass-morphism rounded-lg p-6">
+                        <h3 class="text-lg font-semibold mb-4">Heart Rate Trend</h3>
+                        <div class="chart-container">
+                            <canvas id="hr-chart"></canvas>
+                        </div>
+                    </div>
+
+                    <!-- SPO2 Chart -->
+                    <div class="glass-morphism rounded-lg p-6">
+                        <h3 class="text-lg font-semibold mb-4">SpO2 Trend</h3>
+                        <div class="chart-container">
+                            <canvas id="spo2-chart"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Metadata & Logs Section -->
+        <section class="mb-6">
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <!-- Encryption Metadata -->
+                <div class="glass-morphism rounded-lg p-6">
+                    <h2 class="text-xl font-semibold mb-4 flex items-center">
+                        <i class="fas fa-key mr-2"></i>
+                        Encryption Metadata
+                    </h2>
+                    <div class="space-y-3">
+                        <div class="flex justify-between">
+                            <span class="text-sm opacity-75">Algorithm Pipeline:</span>
+                            <span class="text-sm font-mono" id="pipeline-display">LFSR → Tinkerbell → Transposition</span>
+                        </div>
+                        <div class="flex justify-between">
+                            <span class="text-sm opacity-75">Active Recipe:</span>
+                            <span class="text-sm font-mono" id="recipe-display">FULL_STACK</span>
+                        </div>
+                        <div class="flex justify-between">
+                            <span class="text-sm opacity-75">Message Nonce:</span>
+                            <span class="text-sm font-mono" id="nonce-display">0x00000000</span>
+                        </div>
+                        <div class="flex justify-between">
+                            <span class="text-sm opacity-75">HMAC Status:</span>
+                            <span class="text-sm font-mono" id="hmac-status">
+                                <span class="status-indicator status-online"></span>OK
+                            </span>
+                        </div>
+                        <div class="flex justify-between">
+                            <span class="text-sm opacity-75">HMAC Key Fingerprint:</span>
+                            <span class="text-sm font-mono text-xs" id="hmac-fingerprint">A1B2C3D4...</span>
+                        </div>
+                        <div class="flex justify-between">
+                            <span class="text-sm opacity-75">Processing Time:</span>
+                            <span class="text-sm font-mono" id="processing-time">0.0ms</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Log Viewer -->
+                <div class="glass-morphism rounded-lg p-6">
+                    <div class="flex justify-between items-center mb-4">
+                        <h2 class="text-xl font-semibold flex items-center">
+                            <i class="fas fa-list-alt mr-2"></i>
+                            System Logs
+                        </h2>
+                        <div class="flex space-x-2">
+                            <input type="text" id="log-filter" placeholder="Filter logs..." 
+                                   onkeyup="filterLogs()" 
+                                   class="px-2 py-1 bg-white/10 rounded text-sm w-32">
+                            <select id="log-level" onchange="filterLogs()" 
+                                    class="px-2 py-1 bg-white/10 rounded text-sm">
+                                <option value="all">All</option>
+                                <option value="error">Errors</option>
+                                <option value="warning">Warnings</option>
+                                <option value="info">Info</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div id="log-viewer" class="space-y-2 max-h-64 overflow-y-auto font-mono text-xs">
+                        <!-- Logs will be inserted here -->
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Timeline Section -->
+        <section class="mb-6">
+            <div class="glass-morphism rounded-lg p-6">
+                <h2 class="text-xl font-semibold mb-4 flex items-center">
+                    <i class="fas fa-history mr-2"></i>
+                    Recipe Change Timeline
+                </h2>
+                <div id="timeline" class="space-y-4">
+                    <!-- Timeline events will be inserted here -->
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- Notifications Container -->
+    <div id="notifications" class="fixed top-20 right-4 z-50 space-y-2 max-w-sm">
+        <!-- Notifications will be inserted here -->
+    </div>
+
+    <script>
+        // Global state
+        let ws = null;
+        let selectedRecipe = 'FULL_STACK';
+        let telemetryData = [];
+        let hrChart = null;
+        let spo2Chart = null;
+        let notificationCount = 0;
+        
+        // Initialize WebSocket connection
+        function initWebSocket() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.hostname}:8082`;
+            
+            ws = new WebSocket(wsUrl);
+            
+            ws.onopen = function() {
+                console.log('WebSocket connected');
+                addLog('info', 'WebSocket connected to telemetry stream');
+                
+                // Subscribe to telemetry
+                ws.send(JSON.stringify({
+                    type: 'subscribe'
+                }));
+            };
+            
+            ws.onmessage = function(event) {
+                const data = JSON.parse(event.data);
+                handleWebSocketMessage(data);
+            };
+            
+            ws.onerror = function(error) {
+                console.error('WebSocket error:', error);
+                addLog('error', 'WebSocket connection error');
+            };
+            
+            ws.onclose = function() {
+                console.log('WebSocket disconnected');
+                addLog('warning', 'WebSocket disconnected - attempting reconnection...');
+                setTimeout(initWebSocket, 5000);
+            };
+        }
+        
+        // Handle WebSocket messages
+        function handleWebSocketMessage(data) {
+            switch (data.type) {
+                case 'telemetry':
+                    handleTelemetry(data);
+                    break;
+                case 'recipe_change':
+                    handleRecipeChange(data);
+                    break;
+                case 'subscribed':
+                    addLog('info', 'Subscribed to telemetry stream');
+                    break;
+            }
+        }
+        
+        // Handle incoming telemetry data
+        function handleTelemetry(data) {
+            telemetryData.push(data);
+            
+            // Update health feed
+            updateHealthFeed(data);
+            
+            // Update charts
+            updateCharts(data);
+            
+            // Update metadata
+            updateMetadata(data);
+            
+            // Update statistics
+            updateStatistics();
+            
+            // Add log entry
+            addLog('info', `Received packet: HR=${data.hr}, SPO2=${data.spo2}, Status=${data.packet_status}`);
+        }
+        
+        // Handle recipe change notifications
+        function handleRecipeChange(data) {
+            addNotification('info', `Recipe changed: ${data.old_recipe} → ${data.new_recipe}`, data.reason);
+            addLog('info', `Recipe switched: ${data.old_recipe} -> ${data.new_recipe} (${data.reason})`);
+            updateTimeline('recipe_change', data);
+            updateRecipeDisplay(data.new_recipe);
+        }
+        
+        // Update health feed display
+        function updateHealthFeed(data) {
+            const feed = document.getElementById('health-feed');
+            const entry = document.createElement('div');
+            entry.className = 'log-entry bg-white/5 rounded p-3 border-l-4 ' + 
+                           (data.packet_status === 'OK' ? 'border-green-400' : 'border-red-400');
+            
+            const time = new Date(data.timestamp).toLocaleTimeString();
+            entry.innerHTML = `
+                <div class="flex justify-between items-center">
+                    <div class="flex items-center space-x-3">
+                        <span class="status-indicator ${data.packet_status === 'OK' ? 'status-online' : 'status-error'}"></span>
+                        <div>
+                            <div class="font-mono text-sm">${time}</div>
+                            <div class="text-xs opacity-75">HR: ${data.hr} | SPO2: ${data.spo2}% | Steps: ${data.steps}</div>
+                        </div>
+                    </div>
+                    <div class="text-xs">
+                        <div class="font-mono">${data.recipe}</div>
+                        <div class="opacity-75">${data.packet_status}</div>
+                    </div>
+                </div>
+            `;
+            
+            feed.insertBefore(entry, feed.firstChild);
+            
+            // Keep only last 20 entries
+            while (feed.children.length > 20) {
+                feed.removeChild(feed.lastChild);
+            }
+        }
+        
+        // Initialize charts
+        function initCharts() {
+            const chartOptions = {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    x: {
+                        display: true,
+                        grid: { color: 'rgba(255, 255, 255, 0.1)' },
+                        ticks: { color: 'rgba(255, 255, 255, 0.7)' }
+                    },
+                    y: {
+                        display: true,
+                        grid: { color: 'rgba(255, 255, 255, 0.1)' },
+                        ticks: { color: 'rgba(255, 255, 255, 0.7)' }
+                    }
+                },
+                plugins: {
+                    legend: { display: false }
+                }
+            };
+            
+            // HR Chart
+            const hrCtx = document.getElementById('hr-chart').getContext('2d');
+            hrChart = new Chart(hrCtx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [{
+                        label: 'Heart Rate',
+                        data: [],
+                        borderColor: 'rgb(239, 68, 68)',
+                        backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                        tension: 0.4
+                    }]
+                },
+                options: {
+                    ...chartOptions,
+                    scales: {
+                        ...chartOptions.scales,
+                        y: {
+                            ...chartOptions.scales.y,
+                            min: 40,
+                            max: 100
+                        }
+                    }
+                }
+            });
+            
+            // SPO2 Chart
+            const spo2Ctx = document.getElementById('spo2-chart').getContext('2d');
+            spo2Chart = new Chart(spo2Ctx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [{
+                        label: 'SpO2',
+                        data: [],
+                        borderColor: 'rgb(59, 130, 246)',
+                        backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                        tension: 0.4
+                    }]
+                },
+                options: {
+                    ...chartOptions,
+                    scales: {
+                        ...chartOptions.scales,
+                        y: {
+                            ...chartOptions.scales.y,
+                            min: 85,
+                            max: 100
+                        }
+                    }
+                }
+            });
+        }
+        
+        // Update charts with new data
+        function updateCharts(data) {
+            const time = new Date(data.timestamp).toLocaleTimeString();
+            
+            // Keep only last 20 data points
+            if (hrChart.data.labels.length >= 20) {
+                hrChart.data.labels.shift();
+                hrChart.data.datasets[0].data.shift();
+            }
+            
+            hrChart.data.labels.push(time);
+            hrChart.data.datasets[0].data.push(data.hr);
+            hrChart.update();
+            
+            if (spo2Chart.data.labels.length >= 20) {
+                spo2Chart.data.labels.shift();
+                spo2Chart.data.datasets[0].data.shift();
+            }
+            
+            spo2Chart.data.labels.push(time);
+            spo2Chart.data.datasets[0].data.push(data.spo2);
+            spo2Chart.update();
+        }
+        
+        // Update encryption metadata display
+        function updateMetadata(data) {
+            document.getElementById('nonce-display').textContent = '0x' + data.nonce.toString(16).toUpperCase().padStart(8, '0');
+            document.getElementById('hmac-fingerprint').textContent = data.hmac_key_fingerprint || 'UNKNOWN';
+            document.getElementById('processing-time').textContent = (data.processing_time_ms || 0).toFixed(2) + 'ms';
+            
+            const hmacStatus = document.getElementById('hmac-status');
+            if (data.hmac_status === 'OK') {
+                hmacStatus.innerHTML = '<span class="status-indicator status-online"></span>OK';
+            } else {
+                hmacStatus.innerHTML = '<span class="status-indicator status-error"></span>' + data.hmac_status;
+            }
+        }
+        
+        // Update statistics
+        function updateStatistics() {
+            const totalPackets = telemetryData.length;
+            const failedPackets = telemetryData.filter(d => d.packet_status !== 'OK').length;
+            const failureRate = totalPackets > 0 ? (failedPackets / totalPackets * 100).toFixed(1) : 0;
+            
+            document.getElementById('packet-count').textContent = totalPackets;
+            document.getElementById('failure-rate').textContent = failureRate + '%';
+        }
+        
+        // Recipe selection
+        function selectRecipe(recipe) {
+            selectedRecipe = recipe;
+            
+            // Update UI
+            document.querySelectorAll('.recipe-tile').forEach(tile => {
+                tile.classList.remove('active');
+            });
+            document.querySelector(`[data-recipe="${recipe}"]`).classList.add('active');
+        }
+        
+        // Apply selected recipe
+        async function applySelectedRecipe() {
+            try {
+                const response = await fetch('/api/apply_recipe', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        recipe: selectedRecipe,
+                        request_id: generateRequestId()
+                    })
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    addNotification('success', 'Recipe applied successfully', 'Manual application');
+                    addLog('info', `Recipe applied: ${selectedRecipe}`);
+                    updateRecipeDisplay(selectedRecipe);
+                } else {
+                    addNotification('error', 'Failed to apply recipe', result.message || 'Unknown error');
+                }
+            } catch (error) {
+                addNotification('error', 'Failed to apply recipe', error.message);
+            }
+        }
+        
+        // Set operating mode
+        async function setMode(mode) {
+            try {
+                const response = await fetch('/api/set_mode', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        mode: mode
+                    })
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    // Update UI
+                    document.getElementById('server-mode').textContent = mode;
+                    
+                    document.getElementById('mode-normal').classList.toggle('border-green-400', mode === 'NORMAL');
+                    document.getElementById('mode-normal').classList.toggle('border-transparent', mode !== 'NORMAL');
+                    document.getElementById('mode-ztm').classList.toggle('border-red-400', mode === 'ZTM');
+                    document.getElementById('mode-ztm').classList.toggle('border-transparent', mode !== 'ZTM');
+                    
+                    addNotification('success', `Mode changed to ${mode}`, 'Manual mode change');
+                    addLog('info', `Mode set to: ${mode}`);
+                    updateTimeline('mode_change', { mode: mode });
+                } else {
+                    addNotification('error', 'Failed to set mode', result.message || 'Unknown error');
+                }
+            } catch (error) {
+                addNotification('error', 'Failed to set mode', error.message);
+            }
+        }
+        
+        // Toggle features
+        function toggleAutoSwitching() {
+            const enabled = document.getElementById('auto-switching').checked;
+            addLog('info', `Auto-switching ${enabled ? 'enabled' : 'disabled'}`);
+        }
+        
+        function toggleHeuristics() {
+            const enabled = document.getElementById('heuristics').checked;
+            addLog('info', `Heuristics ${enabled ? 'enabled' : 'disabled'}`);
+        }
+        
+        function toggleNotifications() {
+            // This would affect the notification system
+        }
+        
+        // Simulate attack
+        async function simulateAttack(type) {
+            try {
+                const response = await fetch('/api/simulate/attack', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        type: type
+                    })
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    addNotification('warning', 'Attack simulation started', type);
+                    addLog('warning', `Simulated attack: ${type}`);
+                } else {
+                    addNotification('error', 'Failed to simulate attack', result.message);
+                }
+            } catch (error) {
+                addNotification('error', 'Failed to simulate attack', error.message);
+            }
+        }
+        
+        // Export logs
+        function exportLogs() {
+            const logs = Array.from(document.querySelectorAll('#log-viewer .log-entry'))
+                .map(entry => entry.textContent)
+                .join('\n');
+            
+            const blob = new Blob([logs], { type: 'text/plain' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `xenocipher-logs-${new Date().toISOString().slice(0, 10)}.txt`;
+            a.click();
+            window.URL.revokeObjectURL(url);
+        }
+        
+        // Add log entry
+        function addLog(level, message) {
+            const logViewer = document.getElementById('log-viewer');
+            const entry = document.createElement('div');
+            entry.className = 'log-entry p-2 rounded bg-white/5 ' + 
+                           (level === 'error' ? 'text-red-400 border-l-2 border-red-400' :
+                            level === 'warning' ? 'text-yellow-400 border-l-2 border-yellow-400' :
+                            'text-green-400 border-l-2 border-green-400');
+            
+            const time = new Date().toLocaleTimeString();
+            entry.innerHTML = `[${time}] [${level.toUpperCase()}] ${message}`;
+            
+            logViewer.insertBefore(entry, logViewer.firstChild);
+            
+            // Keep only last 100 entries
+            while (logViewer.children.length > 100) {
+                logViewer.removeChild(logViewer.lastChild);
+            }
+        }
+        
+        // Filter logs
+        function filterLogs() {
+            const filter = document.getElementById('log-filter').value.toLowerCase();
+            const level = document.getElementById('log-level').value;
+            
+            const entries = document.querySelectorAll('#log-viewer .log-entry');
+            entries.forEach(entry => {
+                const text = entry.textContent.toLowerCase();
+                const matchesFilter = !filter || text.includes(filter);
+                const matchesLevel = level === 'all' || text.includes(level.toUpperCase());
+                
+                entry.style.display = matchesFilter && matchesLevel ? 'block' : 'none';
+            });
+        }
+        
+        // Add notification
+        function addNotification(type, message, detail = '') {
+            const container = document.getElementById('notifications');
+            const notification = document.createElement('div');
+            notification.className = `notification glass-morphism rounded-lg p-4 mb-2 max-w-sm ` +
+                                   (type === 'error' ? 'border-red-400' :
+                                    type === 'warning' ? 'border-yellow-400' :
+                                    type === 'success' ? 'border-green-400' :
+                                    'border-blue-400');
+            
+            notification.innerHTML = `
+                <div class="flex items-start">
+                    <i class="fas ${type === 'error' ? 'fa-exclamation-circle text-red-400' :
+                                   type === 'warning' ? 'fa-exclamation-triangle text-yellow-400' :
+                                   type === 'success' ? 'fa-check-circle text-green-400' :
+                                   'fa-info-circle text-blue-400'} mr-3 mt-1"></i>
+                    <div class="flex-1">
+                        <div class="font-semibold">${message}</div>
+                        ${detail ? `<div class="text-sm opacity-75">${detail}</div>` : ''}
+                    </div>
+                    <button onclick="this.parentElement.parentElement.remove()" 
+                            class="ml-3 text-white/50 hover:text-white">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+            `;
+            
+            container.insertBefore(notification, container.firstChild);
+            
+            // Auto-remove after 10 seconds
+            setTimeout(() => {
+                if (notification.parentElement) {
+                    notification.remove();
+                }
+            }, 10000);
+            
+            // Keep only last 5 notifications
+            while (container.children.length > 5) {
+                container.removeChild(container.lastChild);
+            }
+        }
+        
+        // Update timeline
+        function updateTimeline(type, data) {
+            const timeline = document.getElementById('timeline');
+            const item = document.createElement('div');
+            item.className = 'timeline-item';
+            
+            const time = new Date().toLocaleTimeString();
+            const icon = type === 'recipe_change' ? 'fa-exchange-alt' : 'fa-cog';
+            const color = type === 'recipe_change' ? 'text-blue-400' : 'text-green-400';
+            
+            item.innerHTML = `
+                <div class="timeline-dot"></div>
+                <div class="glass-morphism rounded p-4">
+                    <div class="flex items-center justify-between">
+                        <div class="flex items-center">
+                            <i class="fas ${icon} ${color} mr-2"></i>
+                            <span class="font-semibold">${type === 'recipe_change' ? 'Recipe Change' : 'Mode Change'}</span>
+                        </div>
+                        <span class="text-xs opacity-75">${time}</span>
+                    </div>
+                    <div class="text-sm mt-2">
+                        ${type === 'recipe_change' ? 
+                          `${data.old_recipe} → ${data.new_recipe}` : 
+                          `Mode: ${data.mode}`}
+                    </div>
+                    ${data.reason ? `<div class="text-xs opacity-75 mt-1">Reason: ${data.reason}</div>` : ''}
+                </div>
+            `;
+            
+            timeline.insertBefore(item, timeline.firstChild);
+            
+            // Keep only last 10 items
+            while (timeline.children.length > 10) {
+                timeline.removeChild(timeline.lastChild);
+            }
+        }
+        
+        // Update recipe display
+        function updateRecipeDisplay(recipe) {
+            document.getElementById('active-recipe').textContent = recipe;
+            document.getElementById('recipe-display').textContent = recipe;
+            
+            // Update pipeline display based on recipe
+            const pipelines = {
+                'FULL_STACK': 'LFSR → Tinkerbell → ChaCha20 → Salsa20 → Transposition',
+                'CHACHA_HEAVY': 'LFSR → Tinkerbell → ChaCha20 → Transposition',
+                'SALSA_LIGHT': 'LFSR → Salsa20',
+                'CHAOS_ONLY': 'LFSR → Tinkerbell → Transposition',
+                'STREAM_FOCUS': 'LFSR → ChaCha20 → Salsa20'
+            };
+            
+            document.getElementById('pipeline-display').textContent = pipelines[recipe] || 'Unknown';
+            
+            // Update active recipe tile
+            document.querySelectorAll('.recipe-tile').forEach(tile => {
+                tile.classList.remove('active');
+            });
+            const activeTile = document.querySelector(`[data-recipe="${recipe}"]`);
+            if (activeTile) {
+                activeTile.classList.add('active');
+            }
+        }
+        
+        // Utility functions
+        function generateRequestId() {
+            return 'REQ_' + Math.random().toString(36).substr(2, 9) + '_' + Date.now();
+        }
+        
+        function toggleFullscreen() {
+            if (!document.fullscreenElement) {
+                document.documentElement.requestFullscreen();
+            } else {
+                document.exitFullscreen();
+            }
+        }
+        
+        function updateTime() {
+            const now = new Date();
+            document.getElementById('current-time').textContent = now.toLocaleString();
+        }
+        
+        // Load server status
+        async function loadServerStatus() {
+            try {
+                const response = await fetch('/api/status');
+                const status = await response.json();
+                
+                // Update UI with server status
+                document.getElementById('server-mode').textContent = status.mode;
+                document.getElementById('active-recipe').textContent = status.active_recipe;
+                document.getElementById('packet-count').textContent = status.total_packets;
+                
+                // Update toggles
+                document.getElementById('auto-switching').checked = status.auto_switching_enabled;
+                document.getElementById('heuristics').checked = status.heuristics_enabled;
+                
+                // Update mode buttons
+                setMode(status.mode);
+                updateRecipeDisplay(status.active_recipe);
+                
+                addLog('info', 'Server status loaded successfully');
+            } catch (error) {
+                addLog('error', 'Failed to load server status: ' + error.message);
+            }
+        }
+        
+        // Initialize dashboard
+        function initDashboard() {
+            initCharts();
+            initWebSocket();
+            loadServerStatus();
+            updateRecipeDisplay('FULL_STACK');
+            
+            // Set up periodic updates
+            setInterval(updateTime, 1000);
+            setInterval(loadServerStatus, 30000); // Reload status every 30 seconds
+            
+            // Initialize with some welcome messages
+            addLog('info', 'XenoCipher Dashboard initialized');
+            addLog('info', 'WebSocket connecting...');
+            
+            // Set initial recipe selection
+            selectRecipe('FULL_STACK');
+        }
+        
+        // Start the dashboard when page loads
+        document.addEventListener('DOMContentLoaded', initDashboard);
+    </script>
+</body>
+</html>
