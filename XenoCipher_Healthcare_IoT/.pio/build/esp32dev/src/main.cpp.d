@@ -239,10 +239,11 @@
  .pio/libdeps/esp32dev/ArduinoJson/src/ArduinoJson/Configuration.hpp \
  C:/Users/chall/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/nvs_flash/include/nvs_flash.h \
  C:/Users/chall/.platformio/packages/framework-arduinoespressif32/tools/sdk/esp32/include/nvs_flash/include/nvs.h \
- lib/common/common.h lib/CryptoKDF/include/crypto_kdf.h \
- lib/LFSR/include/lfsr.h lib/Tinkerbell/include/tinkerbell.h \
+ .pio/libdeps/esp32dev/WebSockets/src/WebSocketsClient.h \
+ .pio/libdeps/esp32dev/WebSockets/src/WebSockets.h \
+ .pio/libdeps/esp32dev/WebSockets/src/WebSocketsVersion.h \
+ lib/CryptoKDF/include/crypto_kdf.h lib/LFSR/include/lfsr.h \
+ lib/Tinkerbell/include/tinkerbell.h \
  lib/Transposition/include/transposition.h lib/HMAC/include/hmac.h \
  lib/Entropy/include/entropy.h src/../lib/NTRU/include/ntru.h \
- src/../lib/Adaptive_Switchboard/include/adaptive_switchboard.h \
- lib/Heuristics_Manager/include/heuristics_manager.h \
- lib/ChaCha20/include/chacha20_impl.h lib/Salsa20/include/salsa20_impl.h
+ lib/common/common.h
