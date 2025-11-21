@@ -422,6 +422,7 @@ static void xor_with_stream_hmac(const uint8_t key[16], uint32_t nonce, uint8_t*
     const char label[] = "XENO-TINK";
     uint8_t counter = 0;
     size_t offset = 0;
+    bool firstBlock = true;
     
     while (offset < len) {
         uint8_t block[32];
@@ -431,15 +432,41 @@ static void xor_with_stream_hmac(const uint8_t key[16], uint32_t nonce, uint8_t*
         msg[sizeof(label) + 1] = (uint8_t)((nonce >> 16) & 0xFF);
         msg[sizeof(label) + 2] = (uint8_t)((nonce >> 8) & 0xFF);
         msg[sizeof(label) + 3] = (uint8_t)(nonce & 0xFF);
-        msg[sizeof(label) + 4] = counter++;
+        msg[sizeof(label) + 4] = counter;
+        
+        // DEBUG: Log Tinkerbell XOR keystream generation
+        if (firstBlock) {
+            std::ostringstream tinkDebug;
+            tinkDebug << "[TINKERBELL] Generating keystream block - Nonce: 0x" 
+                     << std::hex << std::uppercase << std::setfill('0') << std::setw(8) << nonce
+                     << " Counter: " << (int)counter
+                     << " (must start at 0)"
+                     << " Key[0..3]: " << bytesToHex(key, 4);
+            log_debug(tinkDebug.str());
+            firstBlock = false;
+        } else if (offset < len) {
+            // Log when counter increments (for buffers > 32 bytes)
+            std::ostringstream tinkCounterDebug;
+            tinkCounterDebug << "[TINKERBELL] Counter incrementing to: " << (int)counter;
+            log_debug(tinkCounterDebug.str());
+        }
         
         hmac_sha256_full(key, 16, msg, sizeof(msg), block);
+        
+        // DEBUG: Log first 16 bytes of keystream block
+        if (offset == 0) {
+            std::ostringstream keystreamDebug;
+            keystreamDebug << "[TINKERBELL] Keystream block[" << (int)counter << "] (first 16 bytes): " 
+                          << bytesToHex(block, 16);
+            log_debug(keystreamDebug.str());
+        }
         
         size_t n = (len - offset) < sizeof(block) ? (len - offset) : sizeof(block);
         for (size_t i = 0; i < n; ++i) {
             data[offset + i] ^= block[i];
         }
         offset += n;
+        counter++;
     }
 }
 
@@ -515,13 +542,15 @@ std::string pipelineDecryptPacketWithIntermediates(
     std::vector<uint8_t> ct(packetData + ctStart, packetData + ctStart + ctLen);
     std::vector<uint8_t> tag(packetData + ctStart + ctLen, packetData + packetLen);
 
+    std::ostringstream nonceLogStr;
+    nonceLogStr << std::hex << std::uppercase << std::setfill('0') << std::setw(8) << nonce;
     log_debug("Header: ver=0x" + bytesToHex(&version, 1) +
              " saltLen=" + std::to_string(saltLen) +
              " saltPos=" + std::to_string(saltPos) +
              " payloadLen=" + std::to_string(payloadLen) +
              " rows=" + std::to_string(rows) +
              " cols=" + std::to_string(cols) +
-             " nonce=0x" + bytesToHex((uint8_t*)&nonce, 4));
+             " nonce=0x" + nonceLogStr.str());
 
     // Derive message keys
     MessageKeys messageKeys;
@@ -530,10 +559,14 @@ std::string pipelineDecryptPacketWithIntermediates(
         return "";
     }
 
-    // FIXED: Debug output for derived keys
-    log_debug("MsgKeys: lfsrSeed=0x" + bytesToHex((uint8_t*)&messageKeys.lfsrSeed, 4) +
+    // FIXED: Debug output for derived keys - format matches ESP32
+    std::ostringstream seedStr, nonceStr;
+    seedStr << std::hex << std::uppercase << std::setfill('0') << std::setw(8) << messageKeys.lfsrSeed;
+    nonceStr << std::hex << std::uppercase << std::setfill('0') << std::setw(8) << nonce;
+    log_debug("MsgKeys: lfsrSeed=0x" + seedStr.str() +
              " tnk[0..3]=" + bytesToHex(messageKeys.tinkerbellKey, 4) +
-             " trn[0..3]=" + bytesToHex(messageKeys.transpositionKey, 4));
+             " trn[0..3]=" + bytesToHex(messageKeys.transpositionKey, 4) +
+             " (nonce=0x" + nonceStr.str() + ")");
 
     // Verify HMAC with detailed debugging
     const size_t headerLen = 8;
@@ -605,11 +638,7 @@ std::string pipelineDecryptPacketWithIntermediates(
 
     log_debug("HMAC verification successful");
     
-    // Mark nonce as used ONLY after successful HMAC verification
-    // This ensures we don't mark nonces as used if HMAC fails
-    if (hasNonce) {
-        nonce_tracker_mark_used(&gNonceTracker, nonce);
-    }
+    // DON'T mark nonce as used yet - wait until after successful decryption AND validation
 
     // Start decryption with intermediates capture
     std::vector<uint8_t> buf = ct;
@@ -625,15 +654,70 @@ std::string pipelineDecryptPacketWithIntermediates(
     log_debug("1_After_Transposition: " + intermediates.afterTransposition.substr(0, 64));
 
     // Step 2: Tinkerbell XOR (same operation for encryption/decryption)
+    // DEBUG: Log input before Tinkerbell XOR
+    std::vector<uint8_t> bufBeforeTink = buf;
+    std::ostringstream beforeTinkDebug;
+    beforeTinkDebug << "[TINKERBELL] Input (first 16 bytes): " << bytesToHex(bufBeforeTink.data(), 16)
+                    << " Nonce: 0x" << std::hex << std::uppercase << std::setfill('0') << std::setw(8) << nonce
+                    << " Buffer size: " << buf.size() << " bytes";
+    log_debug(beforeTinkDebug.str());
+    
     xor_with_stream_hmac(messageKeys.tinkerbellKey, nonce, buf.data(), buf.size());
+    
     intermediates.afterTinkerbell = bytesToHex(buf);
     log_debug("2_After_Tinkerbell: " + intermediates.afterTinkerbell.substr(0, 64));
-
+    
+    // DEBUG: Calculate and log the keystream that was applied
+    std::ostringstream tinkKeystreamDebug;
+    tinkKeystreamDebug << "[TINKERBELL] Applied keystream (first 16 bytes): ";
+    for (size_t i = 0; i < 16 && i < buf.size(); ++i) {
+        uint8_t ks = bufBeforeTink[i] ^ buf[i];
+        tinkKeystreamDebug << std::hex << std::uppercase << std::setfill('0') << std::setw(2) << (int)ks;
+    }
+    log_debug(tinkKeystreamDebug.str());
+    
     // Step 3: LFSR (same operation for encryption/decryption)
-    ChaoticLFSR32 lfsr((uint32_t)messageKeys.lfsrSeed, messageKeys.tinkerbellKey, 0x0029u);
+    // CRITICAL FIX: The LFSR must be initialized with the SAME parameters and consume keystream in the SAME order
+    // as during encryption. The LFSR uses the tinkerbellKey as the chaos key, which is correct.
+    // However, we need to ensure the LFSR state is initialized identically.
+    // The seed is already correct (messageKeys.lfsrSeed), and the chaos key is correct (messageKeys.tinkerbellKey).
+    
+    // DEBUG: Log LFSR initialization parameters
+    uint32_t lfsrSeed = (uint32_t)messageKeys.lfsrSeed;
+    uint32_t seedBe = ((lfsrSeed >> 24) & 0xFF) | ((lfsrSeed >> 8) & 0xFF00) | 
+                      ((lfsrSeed << 8) & 0xFF0000) | ((lfsrSeed << 24) & 0xFF000000);
+    std::ostringstream lfsrInitDebug;
+    lfsrInitDebug << "[LFSR] Initializing - Seed: 0x" << std::hex << std::uppercase << std::setfill('0') 
+                  << std::setw(8) << lfsrSeed
+                  << " SeedBe: 0x" << std::setw(8) << seedBe
+                  << " ChaosKey[0..3]: " << bytesToHex(messageKeys.tinkerbellKey, 4)
+                  << " InitialTap: 0x0029"
+                  << " State: 0x" << std::setw(8) << (lfsrSeed ? lfsrSeed : 0xACE1u);
+    log_debug(lfsrInitDebug.str());
+    
+    ChaoticLFSR32 lfsr(lfsrSeed, messageKeys.tinkerbellKey, 0x0029u);
+    
+    // DEBUG: Log first few bytes before XOR to compare with keystream
+    std::vector<uint8_t> bufBeforeLFSR = buf;
+    std::ostringstream beforeLFSRDebug;
+    beforeLFSRDebug << "[LFSR] Input (first 16 bytes): " << bytesToHex(bufBeforeLFSR.data(), 16)
+                    << " Buffer size: " << buf.size() << " bytes";
+    log_debug(beforeLFSRDebug.str());
+    
     lfsr.xorBuffer(buf.data(), buf.size());
+    
+    // DEBUG: Log first few bytes after XOR to verify keystream generation
     intermediates.afterLFSR = bytesToHex(buf);
     log_debug("3_After_LFSR: " + intermediates.afterLFSR.substr(0, 64));
+    
+    // Calculate and log the keystream that was applied (XOR of before and after)
+    std::ostringstream lfsrKeystreamDebug;
+    lfsrKeystreamDebug << "[LFSR] Keystream (first 16 bytes): ";
+    for (size_t i = 0; i < 16 && i < buf.size(); ++i) {
+        uint8_t ks = bufBeforeLFSR[i] ^ buf[i];
+        lfsrKeystreamDebug << std::hex << std::uppercase << std::setfill('0') << std::setw(2) << (int)ks;
+    }
+    log_debug(lfsrKeystreamDebug.str());
 
     // Step 4: Remove salt and padding
     std::vector<uint8_t> unsalted = removeSalt(buf, grid.rows * grid.cols, saltMeta);
@@ -662,6 +746,29 @@ std::string pipelineDecryptPacketWithIntermediates(
     if (plaintext.length() > 100) {
         log_warn("Decrypted text unusually long: " + std::to_string(plaintext.length()) + " characters");
         plaintext = plaintext.substr(0, 100);
+    }
+    
+    // CRITICAL: Validate plaintext matches expected health data pattern before marking nonce as used
+    // This allows ESP32 to retry if decryption produces garbage
+    std::regex healthRegex(R"(HR-(\d+)\s+SPO2-(\d+)\s+STEPS-(\d+))");
+    std::smatch matches;
+    if (!std::regex_search(plaintext, matches, healthRegex)) {
+        log_error("Decrypted plaintext does not match health data pattern: " + plaintext);
+        log_error("HMAC passed but decryption failed - likely key mismatch or corruption");
+        log_error("Debug: nonce=0x" + nonceStr.str() + 
+                 " lfsrSeed=0x" + seedStr.str() +
+                 " tinkerbellKey[0..3]=" + bytesToHex(messageKeys.tinkerbellKey, 4) +
+                 " transpositionKey[0..3]=" + bytesToHex(messageKeys.transpositionKey, 4));
+        log_error("Debug: After LFSR: " + intermediates.afterLFSR.substr(0, 64));
+        log_error("Debug: After Depad: " + intermediates.afterDepad.substr(0, 64));
+        // Don't mark nonce as used - allow retry
+        return "";
+    }
+    
+    // Only mark nonce as used after successful decryption AND validation
+    // This ensures ESP32 can retry with the same nonce if decryption produces garbage
+    if (hasNonce) {
+        nonce_tracker_mark_used(&gNonceTracker, nonce);
     }
     
     log_info("Successfully decrypted: " + plaintext);
@@ -848,10 +955,10 @@ int main() {
 
     // Initialize NTRU
     NTRUServer ntru;
-    
+
     // Create Crow app
     crow::SimpleApp app;
-    
+
     // Register WebSocket route
     registerEventWS(app);
 
@@ -871,7 +978,7 @@ int main() {
             std::string pubHex = bytesToHex(pubKey);
             
             log_info("Public key requested: " + pubHex.substr(0, 32) + "...");
-
+            
             crow::json::wvalue response;
             response["publicKey"] = "PUBHEX:" + pubHex;
             
@@ -898,7 +1005,7 @@ int main() {
 
         try {
             log_info("Received POST /master-key request");
-
+            
             auto body = crow::json::load(req.body);
             if (!body || !body.has("encKey")) {
                 log_error("Missing encKey field in /master-key request");
@@ -990,10 +1097,10 @@ int main() {
                     log_info("Nonce tracker reset - new session started (NTRU fallback)");
                 } else {
                     log_error("Decrypted key size invalid: " + std::to_string(decryptedKey.size()));
-                    crow::response res(500, crow::json::wvalue{{"error", "Key decrypt error"}});
+                crow::response res(500, crow::json::wvalue{{"error", "Key decrypt error"}});
                     handleCORS(req, res);
-                    return res;
-                }
+                return res;
+            }
             }
 
             if (gMasterKey.size() != 32) {
@@ -1007,14 +1114,14 @@ int main() {
 
             // Store in database
             try {
-                pqxx::work txn(db);
+            pqxx::work txn(db);
                 txn.exec_prepared("insert_master_key", bytesToHex(gMasterKey), std::string("received"));
-                txn.commit();
+            txn.commit();
                 log_info("Master key stored in database");
             } catch (const std::exception& e) {
                 log_error("Database error storing master key: " + std::string(e.what()));
             }
-
+            
             crow::json::wvalue response;
             response["status"] = "OK:Encrypted key received";
             
@@ -1046,7 +1153,7 @@ int main() {
             handleCORS(req, res);
             return res;
         }
-
+        
         try {
             // Parse request body
             nlohmann::json body;
@@ -1073,11 +1180,15 @@ int main() {
                 handleCORS(req, res);
                 return res;
             }
-
+            
             std::string packetHex = encData.substr(9);
             auto packet = hexToBytes(packetHex);
-
+            
             log_info("Health data received, packet size: " + std::to_string(packet.size()));
+            log_debug("Received packet hex (first 64 chars): " + packetHex.substr(0, 64));
+            if (packet.size() >= 12) {
+                log_debug("Received packet bytes (first 12 bytes): " + bytesToHex(packet.data(), 12));
+            }
 
             // Derive keys
             DerivedKeys baseKeys;
@@ -1092,6 +1203,14 @@ int main() {
             log_debug("BaseKeys - HMAC: " + bytesToHex(baseKeys.hmacKey, 32).substr(0, 32) + "...");
             log_debug("BaseKeys - Tinkerbell: " + bytesToHex(baseKeys.tinkerbellKey, 16));
             log_debug("BaseKeys - Transposition: " + bytesToHex(baseKeys.transpositionKey, 16));
+            
+            // Log master key hash for debugging key mismatches
+            std::ostringstream masterKeyHash;
+            masterKeyHash << std::hex << std::uppercase << std::setfill('0');
+            for (size_t i = 0; i < 8 && i < gMasterKey.size(); ++i) {
+                masterKeyHash << std::setw(2) << (int)gMasterKey[i];
+            }
+            log_debug("Master key (first 8 bytes): " + masterKeyHash.str() + "...");
 
             // Decrypt with intermediates capture
             PipelineIntermediates intermediates;
@@ -1123,11 +1242,13 @@ int main() {
                 log_debug("Forwarded encryption update to frontend");
             }
 
-            // Parse health data if it matches the pattern
+            // Parse health data (already validated in pipelineDecryptPacketWithIntermediates)
+            // Plaintext is guaranteed to match pattern at this point
             std::regex healthRegex(R"(HR-(\d+)\s+SPO2-(\d+)\s+STEPS-(\d+))");
             std::smatch matches;
             
             nlohmann::json healthData;
+            // Plaintext is guaranteed to match pattern (validation happens in decryption function)
             if (std::regex_search(plaintext, matches, healthRegex)) {
                 int hr = std::stoi(matches[1]);
                 int spo2 = std::stoi(matches[2]);
@@ -1166,9 +1287,9 @@ int main() {
 
                 // Store in database
                 try {
-                    pqxx::work txn(db);
+            pqxx::work txn(db);
                     txn.exec_prepared("insert_health_data", hr, spo2, steps);
-                    txn.commit();
+            txn.commit();
                     log_info("Health data stored in database: HR=" + std::to_string(hr) + 
                              " SPO2=" + std::to_string(spo2) + " STEPS=" + std::to_string(steps));
                 } catch (const std::exception& e) {
@@ -1205,7 +1326,7 @@ int main() {
             crow::response res(200, crow::json::wvalue{{"status", "OK:DECRYPTED"}});
             handleCORS(req, res);
             return res;
-
+            
         } catch (const std::exception& e) {
             log_error("Error in /health-data: " + std::string(e.what()));
             crow::response res(500, crow::json::wvalue{{"error", "Server error: " + std::string(e.what())}});
@@ -1250,14 +1371,14 @@ int main() {
 
     // Initialize database schema
     try {
-        pqxx::work ddl(db);
+            pqxx::work ddl(db);
         ddl.exec("CREATE TABLE IF NOT EXISTS master_keys ("
                  "id serial PRIMARY KEY,"
                  "master_key text NOT NULL,"
                  "status text NOT NULL DEFAULT 'received',"
                  "created_at timestamptz NOT NULL DEFAULT now()"
-                 ")");
-        
+                     ")");
+
         ddl.exec("CREATE TABLE IF NOT EXISTS health_data ("
                  "id serial PRIMARY KEY,"
                  "heart_rate smallint,"
@@ -1265,7 +1386,7 @@ int main() {
                  "steps integer,"
                  "created_at timestamptz NOT NULL DEFAULT now()"
                  ")");
-        ddl.commit();
+            ddl.commit();
 
         // Prepare statements
         pqxx::work prep(db);
@@ -1274,7 +1395,7 @@ int main() {
         prep.exec("PREPARE insert_health_data (smallint, smallint, integer) AS "
                   "INSERT INTO health_data (heart_rate, spo2, steps) VALUES ($1, $2, $3)");
         prep.commit();
-        
+
         log_info("Database schema initialized");
     } catch (const std::exception& e) {
         log_error("Database initialization error: " + std::string(e.what()));

@@ -23,12 +23,12 @@
 #include "common.h"
 
 // Configuration
-#define SERVER_URL "http://10.199.35.115:8081"
+#define SERVER_URL "http://192.168.137.64:8081"
 #define WS_SERVER "192.168.230.103"  // WebSocket server IP
 #define WS_PORT 8081                 // WebSocket server port
 #define WS_PATH "/api/ws"            // WebSocket path
-#define WIFI_SSID "motorola edge 40_6753" //Galaxy M322E19"
-#define WIFI_PASSWORD "subviv123" //yvhh6733"
+#define WIFI_SSID "LAPTOP-K43PQ3Q1 8708" //Galaxy M322E19"
+#define WIFI_PASSWORD "9R477r1=" //yvhh6733"
 #define HEALTH_DATA_INTERVAL_MS 10000
 #define CONNECTION_TIMEOUT_MS 10000
 #define MAX_RETRIES 3
@@ -138,6 +138,17 @@ void sendEncryptionPipelineUpdate(const PipelineLayer* layers, int layerCount, c
 void handle_communication_state();
 static void printStatus(const char* stateName);
 
+// Encryption pipeline forward declarations
+struct SaltMeta {
+    uint16_t pos;
+    uint8_t len;
+};
+GridSpec selectGrid(size_t len);
+void pipelineEncryptPacket(const DerivedKeys& baseKeys, uint32_t nonce, bool includeNonceExt,
+                           const uint8_t* data, size_t dataLen, const GridSpec& grid,
+                           uint8_t salt_len, uint16_t salt_pos, uint16_t payload_len,
+                           std::vector<uint8_t>& packet, bool verbose);
+
 // ============================================================================
 // RETRY MECHANISM FUNCTIONS - FIXED VERSION
 // ============================================================================
@@ -220,15 +231,60 @@ bool send_health_data_with_retry() {
     uint32_t nonce_to_use = nonce_tracker_get_next(&gDeviceNonceTracker);
     Serial.printf("[RETRY] Using nonce %u for all retry attempts (saved: %u)\n", nonce_to_use, saved_nonce);
     
+    // CRITICAL FIX: Generate health data and encrypt ONCE before retry loop
+    // This ensures all retries use the SAME ciphertext for the same nonce
+    if (!masterKeyReady) {
+        Serial.println("Master keys not ready");
+        gDeviceNonceTracker.lastNonce = saved_nonce; // Rollback nonce
+        return false;
+    }
+
+    char healthBuffer[64];
+    generate_realistic_health_data(healthBuffer, sizeof(healthBuffer), millis());
+    Serial.printf("Generated health data: %s\n", healthBuffer);
+    
+    strncpy(currentPlaintext, healthBuffer, 127);
+    currentPlaintext[127] = '\0';
+    
+    SaltMeta meta;
+    meta.pos = (uint16_t)strlen(healthBuffer);
+    meta.len = 2;
+    
+    const uint8_t* plainData = (const uint8_t*)healthBuffer;
+    size_t plainLen = strlen(healthBuffer);
+    GridSpec grid = selectGrid(plainLen);
+    
+    std::vector<uint8_t> packet;
+    bool verbose = true;
+    capturedLayerIndex = 0;
+    capturingLayers = verbose;
+    
+    // Encrypt ONCE before retry loop
+    pipelineEncryptPacket(gBaseKeys, nonce_to_use, true, plainData, plainLen, grid,
+                          meta.len, meta.pos, plainLen, packet, verbose);
+    
+    if (packet.empty()) {
+        Serial.println("Encryption failed - empty packet");
+        capturingLayers = false;
+        gDeviceNonceTracker.lastNonce = saved_nonce; // Rollback nonce
+        return false;
+    }
+    
+    // Now retry sending the SAME encrypted packet
     for (int attempt = 0; attempt < max_retries; attempt++) {
         Serial.printf("[RETRY] Attempt %d/%d (nonce: %u)\n", attempt + 1, max_retries, nonce_to_use);
         
-        // Try to send health data using your existing function
-        if (encrypt_and_send_health_data_with_nonce(nonce_to_use)) {
+        // Send the SAME encrypted packet (no re-encryption)
+        bool success = http_post_enc_data_with_pipeline(packet, healthBuffer, 
+                                                        capturedLayers, capturedLayerIndex);
+        
+        if (success) {
+            capturingLayers = false;
             Serial.println("[RETRY] Health data sent successfully!");
             consecutive_failures = 0; // Reset failure counter on success
-            // Nonce is already marked as used in encrypt_and_send_health_data_with_nonce
-            // Don't need to rollback - success!
+            // Mark nonce as successfully used
+            gDeviceNonceTracker.lastNonce = nonce_to_use;
+            gDeviceNonceTracker.lastTsMs = GET_TIME_MS();
             return true;
         }
         
@@ -238,10 +294,9 @@ bool send_health_data_with_retry() {
             Serial.printf("[RETRY] Send failed, waiting %d ms before retry\n", backoff_time);
             delay(backoff_time);
         }
-        
-        // Reset crypto state for retry (but keep same nonce)
-        reset_crypto_state_for_retry();
     }
+    
+    capturingLayers = false;
     
     // If all retries fail, rollback nonce (don't increment it)
     // This ensures we can retry with the same nonce later if needed
@@ -720,10 +775,11 @@ static bool http_post_enc_data_with_pipeline(const std::vector<uint8_t>& packet,
 // ============================================================================
 
 // FIXED: Consistent Tinkerbell XOR stream implementation
-static void xor_with_stream_hmac(const uint8_t key16[16], uint32_t nonce, uint8_t* data, size_t len) {
+static void xor_with_stream_hmac(const uint8_t key16[16], uint32_t nonce, uint8_t* data, size_t len, bool verbose = false) {
   const char label[] = "XENO-TINK";
   uint8_t counter = 0;
   size_t offset = 0;
+  bool firstBlock = true;
   
   while (offset < len) {
     uint8_t block[32];
@@ -733,16 +789,39 @@ static void xor_with_stream_hmac(const uint8_t key16[16], uint32_t nonce, uint8_
     msg[sizeof(label) + 1] = (uint8_t)((nonce >> 16) & 0xFF);
     msg[sizeof(label) + 2] = (uint8_t)((nonce >> 8) & 0xFF);
     msg[sizeof(label) + 3] = (uint8_t)(nonce & 0xFF);
-    msg[sizeof(label) + 4] = counter++;
+    msg[sizeof(label) + 4] = counter;
+    
+    // DEBUG: Log Tinkerbell XOR keystream generation
+    if (verbose && firstBlock) {
+      Serial.printf("[ESP32][TINKERBELL] Generating keystream block - Nonce: 0x%08X Counter: %u (must start at 0) Key[0..3]: ", nonce, counter);
+      for (int i = 0; i < 4; ++i) {
+        Serial.printf("%02X", key16[i]);
+      }
+      Serial.println();
+      firstBlock = false;
+    } else if (verbose && offset < len) {
+      // Log when counter increments (for buffers > 32 bytes)
+      Serial.printf("[ESP32][TINKERBELL] Counter incrementing to: %u\n", counter);
+    }
     
     // Use consistent HMAC implementation
     hmac_sha256_full(key16, 16, msg, sizeof(msg), block);
+    
+    // DEBUG: Log first 16 bytes of keystream block
+    if (verbose && offset == 0) {
+      Serial.printf("[ESP32][TINKERBELL] Keystream block[%u] (first 16 bytes): ", counter);
+      for (int i = 0; i < 16; ++i) {
+        Serial.printf("%02X", block[i]);
+      }
+      Serial.println();
+    }
     
     size_t n = (len - offset) < sizeof(block) ? (len - offset) : sizeof(block);
     for (size_t i = 0; i < n; ++i) {
       data[offset + i] ^= block[i];
     }
     offset += n;
+    counter++;
   }
 }
 
@@ -876,11 +955,6 @@ static void generate_realistic_health_data(char* buffer, size_t buffer_size, uin
 // ENCRYPTION PIPELINE - FIXED COMPATIBLE VERSION
 // ============================================================================
 
-struct SaltMeta {
-  uint16_t pos;
-  uint8_t len;
-};
-
 static std::vector<uint8_t> insertSalt(const uint8_t* plain, size_t plen,
                                        const uint8_t* salt, uint8_t slen,
                                        const SaltMeta& meta) {
@@ -902,7 +976,7 @@ static std::vector<uint8_t> padToGrid(const uint8_t* in, size_t len, const GridS
   return out;
 }
 
-static GridSpec selectGrid(size_t len) {
+GridSpec selectGrid(size_t len) {
   if (len <= 12) return GridSpec{4, 3};
   if (len <= 32) return GridSpec{4, 8};
   if (len <= 64) return GridSpec{8, 8};
@@ -930,13 +1004,13 @@ static void writeHeader(uint8_t* hdr8,
 }
 
 // FIXED: Compatible encryption pipeline that matches server implementation
-static void pipelineEncryptPacket(const DerivedKeys& baseKeys,
-                                  uint32_t nonce, bool includeNonceExt,
-                                  const uint8_t* data, size_t dataLen,
-                                  const GridSpec& grid,
-                                  uint8_t salt_len, uint16_t salt_pos, uint16_t payload_len,
-                                  std::vector<uint8_t>& packet,
-                                  bool verbose) {
+void pipelineEncryptPacket(const DerivedKeys& baseKeys,
+                           uint32_t nonce, bool includeNonceExt,
+                           const uint8_t* data, size_t dataLen,
+                           const GridSpec& grid,
+                           uint8_t salt_len, uint16_t salt_pos, uint16_t payload_len,
+                           std::vector<uint8_t>& packet,
+                           bool verbose) {
   MessageKeys mk;
   if (!deriveMessageKeys(baseKeys, nonce, mk)) {
     Serial.println("deriveMessageKeys failed!");
@@ -967,13 +1041,69 @@ static void pipelineEncryptPacket(const DerivedKeys& baseKeys,
   if (verbose) hexPrint("2_After_Padding", buf.data(), buf.size());
 
   // Step 3: LFSR encryption - FIXED: Use consistent implementation
-  ChaoticLFSR32 lfsr((uint32_t)mk.lfsrSeed, mk.tinkerbellKey, 0x0029u);
+  // DEBUG: Log LFSR initialization parameters
+  uint32_t lfsrSeed = (uint32_t)mk.lfsrSeed;
+  uint32_t seedBe = ((lfsrSeed >> 24) & 0xFF) | ((lfsrSeed >> 8) & 0xFF00) | 
+                    ((lfsrSeed << 8) & 0xFF0000) | ((lfsrSeed << 24) & 0xFF000000);
+  uint32_t initialState = lfsrSeed ? lfsrSeed : 0xACE1u;
+  
+  if (verbose) {
+    Serial.printf("[ESP32][LFSR] Initializing - Seed: 0x%08X SeedBe: 0x%08X ChaosKey[0..3]: ", lfsrSeed, seedBe);
+    for (int i = 0; i < 4; ++i) {
+      Serial.printf("%02X", mk.tinkerbellKey[i]);
+    }
+    Serial.printf(" InitialTap: 0x0029 State: 0x%08X\n", initialState);
+    
+    // Log input before LFSR
+    Serial.printf("[ESP32][LFSR] Input (first 16 bytes): ");
+    for (int i = 0; i < 16 && i < (int)buf.size(); ++i) {
+      Serial.printf("%02X", buf[i]);
+    }
+    Serial.printf(" Buffer size: %u bytes\n", (unsigned)buf.size());
+  }
+  
+  ChaoticLFSR32 lfsr(lfsrSeed, mk.tinkerbellKey, 0x0029u);
+  
+  // Save state before LFSR for keystream calculation
+  std::vector<uint8_t> bufBeforeLFSR = buf;
+  
   lfsr.xorBuffer(buf.data(), buf.size());
-  if (verbose) hexPrint("3_After_LFSR", buf.data(), buf.size());
+  
+  if (verbose) {
+    hexPrint("3_After_LFSR", buf.data(), buf.size());
+    
+    // Calculate and log the keystream that was applied
+    Serial.printf("[ESP32][LFSR] Keystream (first 16 bytes): ");
+    for (int i = 0; i < 16 && i < (int)buf.size(); ++i) {
+      uint8_t ks = bufBeforeLFSR[i] ^ buf[i];
+      Serial.printf("%02X", ks);
+    }
+    Serial.println();
+  }
 
   // Step 4: Tinkerbell encryption - FIXED: Consistent XOR stream
-  xor_with_stream_hmac(mk.tinkerbellKey, nonce, buf.data(), buf.size());
-  if (verbose) hexPrint("4_After_Tinkerbell", buf.data(), buf.size());
+  if (verbose) {
+    Serial.printf("[ESP32][TINKERBELL] Input (first 16 bytes): ");
+    for (int i = 0; i < 16 && i < (int)buf.size(); ++i) {
+      Serial.printf("%02X", buf[i]);
+    }
+    Serial.printf(" Nonce: 0x%08X Buffer size: %u bytes\n", nonce, (unsigned)buf.size());
+  }
+  
+  std::vector<uint8_t> bufBeforeTink = buf;
+  xor_with_stream_hmac(mk.tinkerbellKey, nonce, buf.data(), buf.size(), verbose);
+  
+  if (verbose) {
+    hexPrint("4_After_Tinkerbell", buf.data(), buf.size());
+    
+    // Calculate and log the keystream that was applied
+    Serial.printf("[ESP32][TINKERBELL] Applied keystream (first 16 bytes): ");
+    for (int i = 0; i < 16 && i < (int)buf.size(); ++i) {
+      uint8_t ks = bufBeforeTink[i] ^ buf[i];
+      Serial.printf("%02X", ks);
+    }
+    Serial.println();
+  }
 
   // Step 5: Transposition - FIXED: Use Forward mode for encryption
   uint8_t trKey8[8];
@@ -1127,7 +1257,6 @@ static bool encrypt_and_send_health_data() {
   Serial.printf("[ENCRYPT] Generated nonce: %u\n", nonce);
   return encrypt_and_send_health_data_with_nonce(nonce);
 }
-
 // ============================================================================
 // STATE MACHINE
 // ============================================================================
