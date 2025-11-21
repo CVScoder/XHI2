@@ -246,4 +246,5 @@
  lib/Tinkerbell/include/tinkerbell.h \
  lib/Transposition/include/transposition.h lib/HMAC/include/hmac.h \
  lib/Entropy/include/entropy.h src/../lib/NTRU/include/ntru.h \
- lib/common/common.h
+ lib/common/common.h src/../lib/ChaCha20/include/chacha20_impl.h \
+ src/../lib/Salsa20/include/salsa20_impl.h

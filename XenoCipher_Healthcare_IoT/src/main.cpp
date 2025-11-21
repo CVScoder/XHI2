@@ -21,14 +21,16 @@
 #include "entropy.h"
 #include "../lib/NTRU/include/ntru.h"
 #include "common.h"
+#include "../lib/ChaCha20/include/chacha20_impl.h"
+#include "../lib/Salsa20/include/salsa20_impl.h"
 
 // Configuration
-#define SERVER_URL "http://192.168.137.64:8081"
+#define SERVER_URL "http://10.199.35.115:8081"
 #define WS_SERVER "192.168.230.103"  // WebSocket server IP
 #define WS_PORT 8081                 // WebSocket server port
 #define WS_PATH "/api/ws"            // WebSocket path
-#define WIFI_SSID "LAPTOP-K43PQ3Q1 8708" //Galaxy M322E19"
-#define WIFI_PASSWORD "9R477r1=" //yvhh6733"
+#define WIFI_SSID "motorola edge 40_6753" //Galaxy M322E19"
+#define WIFI_PASSWORD "subviv123" //yvhh6733"
 #define HEALTH_DATA_INTERVAL_MS 10000
 #define CONNECTION_TIMEOUT_MS 10000
 #define MAX_RETRIES 3
@@ -100,6 +102,24 @@ static PipelineLayer capturedLayers[7];
 static int capturedLayerIndex = 0;
 static bool capturingLayers = false;
 static char currentPlaintext[128];
+
+// Adaptive switching state
+enum class OperationalMode {
+    NORMAL,          // Standard XenoCipher (3 algorithms)
+    ZTM              // Zero-Trust Mode (5 algorithms)
+};
+
+enum class ZTMRecipe {
+    FULL_STACK,      // All 5: LFSR + Tinkerbell + Transposition + ChaCha20 + Salsa20
+    CHACHA_HEAVY,    // ChaCha20 + LFSR + Tinkerbell
+    SALSA_LIGHT,     // Salsa20 + LFSR
+    CHAOS_ONLY,      // LFSR + Tinkerbell + Transposition (no stream ciphers)
+    STREAM_FOCUS     // ChaCha20 + Salsa20 + minimal chaos
+};
+
+static OperationalMode gCurrentMode = OperationalMode::NORMAL;
+static ZTMRecipe gCurrentRecipe = ZTMRecipe::FULL_STACK;
+static bool gModeChangePending = false;
 
 // ============================================================================
 // FORWARD DECLARATIONS - ADD THESE
@@ -376,6 +396,61 @@ void webSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
             int steps = doc["healthData"]["steps"] | 0;
             Serial.printf("[WebSocket] Health data - HR: %d, SPO2: %d, Steps: %d\n", hr, spo2, steps);
           }
+        }
+        else if (msgType == "adaptive_switch_request") {
+          // Handle adaptive mode/recipe switch request from dashboard
+          String mode = doc["mode"] | "normal";
+          String recipe = doc["recipe"] | "full_stack";
+          
+          Serial.printf("[WebSocket] Adaptive switch requested: mode=%s, recipe=%s\n", mode.c_str(), recipe.c_str());
+          
+          // Parse mode
+          OperationalMode newMode = (mode == "ztm") ? OperationalMode::ZTM : OperationalMode::NORMAL;
+          
+          // Parse recipe
+          ZTMRecipe newRecipe = ZTMRecipe::FULL_STACK;
+          if (recipe == "full_stack") newRecipe = ZTMRecipe::FULL_STACK;
+          else if (recipe == "chacha_heavy") newRecipe = ZTMRecipe::CHACHA_HEAVY;
+          else if (recipe == "salsa_light") newRecipe = ZTMRecipe::SALSA_LIGHT;
+          else if (recipe == "chaos_only") newRecipe = ZTMRecipe::CHAOS_ONLY;
+          else if (recipe == "stream_focus") newRecipe = ZTMRecipe::STREAM_FOCUS;
+          
+          // Apply change (synchronously)
+          gCurrentMode = newMode;
+          gCurrentRecipe = newRecipe;
+          gModeChangePending = false;
+          
+          Serial.printf("[WebSocket] Mode switched: %s, Recipe: %s\n", 
+                       (newMode == OperationalMode::ZTM) ? "ZTM" : "NORMAL", recipe.c_str());
+          
+          // Acknowledge to server
+          DynamicJsonDocument ackDoc(256);
+          ackDoc["type"] = "adaptive_switch_acknowledged";
+          ackDoc["mode"] = mode;
+          ackDoc["recipe"] = recipe;
+          ackDoc["success"] = true;
+          ackDoc["deviceId"] = String((uint32_t)ESP.getEfuseMac(), HEX);
+          ackDoc["timestamp"] = millis();
+          
+          String ackStr;
+          serializeJson(ackDoc, ackStr);
+          webSocket.sendTXT(ackStr);
+          
+          // Also send HTTP acknowledgment
+          HTTPClient http;
+          http.begin(String(SERVER_URL) + "/adaptive-ack");
+          http.addHeader("Content-Type", "application/json");
+          String ackJson = String("{") +
+                          "\"mode\":\"" + mode + "\"," +
+                          "\"recipe\":\"" + recipe + "\"," +
+                          "\"success\":true" +
+                          "}";
+          http.POST(ackJson);
+          http.end();
+          
+          // Emit telemetry
+          sendWebSocketUpdate("mode_changed", 
+                            String("Mode: " + mode + ", Recipe: " + recipe).c_str());
         }
       }
       break;
@@ -1115,6 +1190,36 @@ void pipelineEncryptPacket(const DerivedKeys& baseKeys,
   memcpy(trKey8, mk.transpositionKey, 8);
   applyTransposition(buf.data(), grid, trKey8, PermuteMode::Forward);
   if (verbose) hexPrint("5_After_Transposition", buf.data(), buf.size());
+  
+  // ZTM MODE: Additional steps 6 & 7 (ChaCha20 and Salsa20)
+  // Only apply if in ZTM mode and recipe requires them
+  if (gCurrentMode == OperationalMode::ZTM) {
+    // Step 6: ChaCha20 (if recipe includes it)
+    if (gCurrentRecipe == ZTMRecipe::FULL_STACK || 
+        gCurrentRecipe == ZTMRecipe::CHACHA_HEAVY || 
+        gCurrentRecipe == ZTMRecipe::STREAM_FOCUS) {
+      ChaCha20 chacha;
+      uint8_t chachaNonce[12];
+      memcpy(chachaNonce, &nonce, 4);
+      memset(chachaNonce + 4, 0, 8);
+      chacha.init(baseKeys.hmacKey, 32, chachaNonce, 12);
+      chacha.encrypt(buf.data(), buf.data(), buf.size());
+      if (verbose) hexPrint("6_After_ChaCha20", buf.data(), buf.size());
+    }
+    
+    // Step 7: Salsa20 (if recipe includes it)
+    if (gCurrentRecipe == ZTMRecipe::FULL_STACK || 
+        gCurrentRecipe == ZTMRecipe::SALSA_LIGHT || 
+        gCurrentRecipe == ZTMRecipe::STREAM_FOCUS) {
+      Salsa20 salsa;
+      uint8_t salsaNonce[8];
+      memcpy(salsaNonce, &nonce, 4);
+      memset(salsaNonce + 4, 0, 4);
+      salsa.init(baseKeys.hmacKey, 32, salsaNonce, 8);
+      salsa.encrypt(buf.data(), buf.data(), buf.size());
+      if (verbose) hexPrint("7_After_Salsa20", buf.data(), buf.size());
+    }
+  }
 
   // Build packet with header and HMAC
   const size_t headerLen = 8;

@@ -1,0 +1,6 @@
+Algorithm,Mode,Encrypt Mean (μs),Encrypt Std (μs),Decrypt Mean (μs),Decrypt Std (μs),Throughput Mean (B/s),Throughput Std (B/s),Heap Before (bytes),Heap Diff (bytes),Iterations
+xenocipher,normal,1313.16,24.52,1080.62,19.12,195017.66,3723.00,264018.24,0.00,50
+xenocipher_ztm,full_stack,1474.64,28.19,12.18,4.04,173665.44,3405.67,263231.20,0.00,50
+aes,normal,232.16,4.34,165.84,6.56,1103058.10,20207.62,264018.24,0.00,50
+rsa,normal,5858088.38,3650038.22,5422010.34,3380584.04,66.77,53.70,263915.20,0.00,50
+ecc,normal,286373.84,42293.20,575696.12,84062.11,912.89,131.88,153895.20,-1401.52,50

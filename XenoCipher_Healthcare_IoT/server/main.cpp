@@ -1335,6 +1335,108 @@ int main() {
         }
     });
 
+    // POST /adaptive-switch - Adaptive mode/recipe switching
+    CROW_ROUTE(app, "/adaptive-switch")
+    .methods("POST"_method, "OPTIONS"_method)
+    ([handleCORS](const crow::request& req) {
+        if (req.method == "OPTIONS"_method) {
+            crow::response res(200);
+            handleCORS(req, res);
+            return res;
+        }
+        
+        try {
+            nlohmann::json body = nlohmann::json::parse(req.body);
+            
+            if (!body.contains("mode") || !body.contains("recipe")) {
+                log_error("Missing mode or recipe in adaptive-switch request");
+                crow::response res(400, crow::json::wvalue{{"error", "Missing mode or recipe"}});
+                handleCORS(req, res);
+                return res;
+            }
+            
+            std::string mode = body["mode"];  // "normal" or "ztm"
+            std::string recipe = body["recipe"];  // "full_stack", "chacha_heavy", etc.
+            
+            log_info("Adaptive switch requested: mode=" + mode + ", recipe=" + recipe);
+            
+            // Broadcast mode change request to ESP32 via WebSocket
+            nlohmann::json switchMsg = {
+                {"type", "adaptive_switch_request"},
+                {"mode", mode},
+                {"recipe", recipe},
+                {"serverTime", GET_TIME_MS()},
+                {"requiresAck", true}
+            };
+            EventBus::broadcast(switchMsg);
+            
+            // Emit telemetry event
+            nlohmann::json telemetry = {
+                {"type", "telemetry"},
+                {"event", "mode_change_requested"},
+                {"data", "mode=" + mode + ",recipe=" + recipe},
+                {"serverTime", GET_TIME_MS()}
+            };
+            EventBus::broadcast(telemetry);
+            
+            crow::response res(200, crow::json::wvalue{
+                {"status", "OK"},
+                {"message", "Mode switch request sent to ESP32"},
+                {"mode", mode},
+                {"recipe", recipe}
+            });
+            handleCORS(req, res);
+            return res;
+            
+        } catch (const std::exception& e) {
+            log_error("Error in /adaptive-switch: " + std::string(e.what()));
+            crow::response res(500, crow::json::wvalue{{"error", "Server error: " + std::string(e.what())}});
+            handleCORS(req, res);
+            return res;
+        }
+    });
+    
+    // POST /adaptive-ack - ESP32 acknowledges mode change
+    CROW_ROUTE(app, "/adaptive-ack")
+    .methods("POST"_method, "OPTIONS"_method)
+    ([handleCORS](const crow::request& req) {
+        if (req.method == "OPTIONS"_method) {
+            crow::response res(200);
+            handleCORS(req, res);
+            return res;
+        }
+        
+        try {
+            nlohmann::json body = nlohmann::json::parse(req.body);
+            
+            std::string mode = body.value("mode", "normal");
+            std::string recipe = body.value("recipe", "full_stack");
+            bool success = body.value("success", true);
+            
+            log_info("ESP32 acknowledged mode change: mode=" + mode + ", recipe=" + recipe + ", success=" + (success ? "true" : "false"));
+            
+            // Broadcast acknowledgment
+            nlohmann::json ackMsg = {
+                {"type", "adaptive_switch_acknowledged"},
+                {"mode", mode},
+                {"recipe", recipe},
+                {"success", success},
+                {"serverTime", GET_TIME_MS()}
+            };
+            EventBus::broadcast(ackMsg);
+            
+            crow::response res(200, crow::json::wvalue{{"status", "OK"}});
+            handleCORS(req, res);
+            return res;
+            
+        } catch (const std::exception& e) {
+            log_error("Error in /adaptive-ack: " + std::string(e.what()));
+            crow::response res(500, crow::json::wvalue{{"error", "Server error"}});
+            handleCORS(req, res);
+            return res;
+        }
+    });
+    
     // GET /metrics
     CROW_ROUTE(app, "/metrics")
     .methods("GET"_method)
