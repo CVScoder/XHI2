@@ -929,6 +929,11 @@ static bool derive_symmetric_keys() {
   nonce_tracker_init(&gDeviceNonceTracker);
   Serial.println("Nonce tracker reset - new session started");
   
+  // CRITICAL: Small delay to ensure server has processed the master key exchange
+  // This prevents sending packets with new keys before server is ready
+  delay(500);
+  Serial.println("Waiting for server to process master key...");
+  
   // Send WebSocket update
   sendWebSocketUpdate("symmetric_keys_derived", "Symmetric keys successfully derived");
   
