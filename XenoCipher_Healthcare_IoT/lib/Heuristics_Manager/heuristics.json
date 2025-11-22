@@ -1,0 +1,233 @@
+{
+  "version": "1.0",
+  "baseline": {
+    "latency_ms": {
+      "mean": 48.5,
+      "stdev": 0.5,
+      "percentile_95": 49.5
+    },
+    "entropy_after": {
+      "mean": 7.8,
+      "min_safe": 7.5
+    },
+    "memory_percent": {
+      "mean": 0.204,
+      "max_normal": 0.21
+    },
+    "cpu_percent": {
+      "mean": 0.0,
+      "max_normal": 5.0
+    }
+  },
+  "heuristics": {
+    "udp_flood": {
+      "enabled": true,
+      "detection_method": "latency_spike",
+      "rules": [
+        {
+          "metric": "latency_ms",
+          "operator": ">",
+          "threshold": 55.0,
+          "type": "absolute",
+          "confidence_weight": 1.0
+        },
+        {
+          "metric": "latency_ms",
+          "operator": ">",
+          "threshold": 3.0,
+          "type": "zscore",
+          "confidence_weight": 0.7
+        }
+      ],
+      "aggregation": "OR",
+      "min_confidence": 0.80,
+      "recipe_switch": {
+        "target_recipe": "CHAOS_ONLY",
+        "reason": "Network DoS detected - maintain baseline security"
+      },
+      "cooldown_seconds": 30,
+      "max_switches_per_hour": 5
+    },
+    "tcp_syn_flood": {
+      "enabled": true,
+      "detection_method": "memory_and_latency",
+      "rules": [
+        {
+          "metric": "memory_percent",
+          "operator": ">",
+          "threshold": 0.22,
+          "type": "absolute",
+          "confidence_weight": 0.9
+        },
+        {
+          "metric": "latency_ms",
+          "operator": ">",
+          "threshold": 54.0,
+          "type": "absolute",
+          "confidence_weight": 0.6
+        }
+      ],
+      "aggregation": "AND",
+      "min_confidence": 0.75,
+      "recipe_switch": {
+        "target_recipe": "CHAOS_ONLY",
+        "reason": "TCP SYN flood detected - maintain baseline security"
+      },
+      "cooldown_seconds": 60,
+      "max_switches_per_hour": 3
+    },
+    "timing_attack": {
+      "enabled": true,
+      "detection_method": "latency_variance",
+      "rules": [
+        {
+          "metric": "latency_cv",
+          "operator": ">",
+          "threshold": 0.05,
+          "type": "absolute",
+          "confidence_weight": 0.9
+        },
+        {
+          "metric": "latency_max_min_delta",
+          "operator": ">",
+          "threshold": 10.0,
+          "type": "absolute",
+          "confidence_weight": 0.7,
+          "window_size": 10
+        }
+      ],
+      "aggregation": "OR",
+      "min_confidence": 0.85,
+      "recipe_switch": {
+        "target_recipe": "SALSA_LIGHT",
+        "reason": "Timing side-channel detected - switch to constant-time cipher"
+      },
+      "cooldown_seconds": 45,
+      "max_switches_per_hour": 4
+    },
+    "rng_manipulation": {
+      "enabled": true,
+      "detection_method": "entropy_drop",
+      "rules": [
+        {
+          "metric": "entropy_drop",
+          "operator": ">",
+          "threshold": 1.5,
+          "type": "absolute",
+          "confidence_weight": 0.99
+        },
+        {
+          "metric": "rng_bias",
+          "operator": ">",
+          "threshold": 0.8,
+          "type": "absolute",
+          "confidence_weight": 0.7
+        }
+      ],
+      "aggregation": "OR",
+      "min_confidence": 0.90,
+      "recipe_switch": {
+        "target_recipe": "FULL_STACK",
+        "reason": "RNG manipulation detected - switch to all-security mode"
+      },
+      "cooldown_seconds": 120,
+      "max_switches_per_hour": 2
+    },
+    "cpu_stress": {
+      "enabled": true,
+      "detection_method": "latency_variance_and_memory",
+      "rules": [
+        {
+          "metric": "latency_cv",
+          "operator": ">",
+          "threshold": 0.1,
+          "type": "absolute",
+          "confidence_weight": 0.8,
+          "window_size": 10
+        },
+        {
+          "metric": "memory_percent",
+          "operator": ">",
+          "threshold": 0.22,
+          "type": "absolute",
+          "confidence_weight": 0.7
+        }
+      ],
+      "aggregation": "AND",
+      "min_confidence": 0.75,
+      "recipe_switch": {
+        "target_recipe": "SALSA_LIGHT",
+        "reason": "CPU exhaustion detected - switch to low-overhead cipher"
+      },
+      "cooldown_seconds": 30,
+      "max_switches_per_hour": 6
+    },
+    "memory_stress": {
+      "enabled": true,
+      "detection_method": "memory_threshold",
+      "rules": [
+        {
+          "metric": "memory_percent",
+          "operator": ">",
+          "threshold": 0.23,
+          "type": "absolute",
+          "confidence_weight": 1.0
+        }
+      ],
+      "aggregation": "OR",
+      "min_confidence": 0.85,
+      "recipe_switch": {
+        "target_recipe": "SALSA_LIGHT",
+        "reason": "Memory saturation detected - use lightweight cipher"
+      },
+      "cooldown_seconds": 60,
+      "max_switches_per_hour": 3
+    }
+  },
+  "recipes": {
+    "CHAOS_ONLY": {
+      "algorithms": ["LFSR", "Tinkerbell", "Transposition"],
+      "description": "Baseline fusion - no stream ciphers",
+      "cpu_overhead_percent": 100,
+      "security_level": "high",
+      "params": {}
+    },
+    "SALSA_LIGHT": {
+      "algorithms": ["LFSR", "Salsa20"],
+      "description": "Lightweight stream cipher only",
+      "cpu_overhead_percent": 120,
+      "security_level": "medium-high",
+      "params": {
+        "salsa_rounds": 20
+      }
+    },
+    "CHACHA_HEAVY": {
+      "algorithms": ["LFSR", "Tinkerbell", "ChaCha20"],
+      "description": "ChaCha20 with chaos",
+      "cpu_overhead_percent": 140,
+      "security_level": "very_high",
+      "params": {
+        "chacha_rounds": 20
+      }
+    },
+    "FULL_STACK": {
+      "algorithms": ["LFSR", "Tinkerbell", "ChaCha20", "Salsa20", "Transposition"],
+      "description": "Maximum security - all algorithms active",
+      "cpu_overhead_percent": 180,
+      "security_level": "maximum",
+      "params": {
+        "chacha_rounds": 20,
+        "salsa_rounds": 20
+      }
+    }
+  },
+  "controller_config": {
+    "telemetry_window_size": 10,
+    "min_switch_interval_seconds": 5,
+    "cooldown_per_attack_seconds": 30,
+    "max_switches_per_hour": 20,
+    "dry_run_mode": false,
+    "enable_logging": true,
+    "log_level": "INFO"
+  }
+}

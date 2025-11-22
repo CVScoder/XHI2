@@ -77,7 +77,7 @@ function Header({ onZeroTrustToggle }: { onZeroTrustToggle: () => void }) {
               className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg font-mono text-sm font-bold border border-red-500 shadow-lg shadow-red-500/25 transition-all cursor-pointer"
               style={{ pointerEvents: 'auto' }}
             >
-              🛡️ ACTIVATE ZERO TRUST
+              🛡️ ZERO TRUST MODE
             </MotionButton>
             <MotionDiv
               className="flex items-center space-x-2"
